@@ -1,0 +1,1169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wide Format Imposer</title>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #f5f5f7; color: #1d1d1f; line-height: 1.5;
+}
+.container { max-width: 760px; margin: 0 auto; padding: 36px 20px; }
+header { text-align: center; margin-bottom: 32px; }
+header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+header p { color: #86868b; font-size: 14px; margin-top: 6px; }
+
+.card {
+  background: #fff; border-radius: 14px; padding: 24px 28px;
+  margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.card h2 {
+  font-size: 12px; font-weight: 600; color: #86868b;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #f0f0f0;
+}
+
+.file-drop {
+  border: 2px dashed #d2d2d7; border-radius: 14px; padding: 40px 24px;
+  text-align: center; transition: all 0.2s; cursor: pointer; background: #fafafa;
+}
+.file-drop:hover, .file-drop.dragover { border-color: #0071e3; background: #f0f7ff; }
+.file-drop .icon { font-size: 40px; margin-bottom: 10px; }
+.file-drop p { font-size: 15px; color: #6e6e73; }
+.file-drop .sub { font-size: 12px; color: #aaa; margin-top: 6px; }
+.file-drop input { display: none; }
+
+.form-row { display: flex; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.form-group { flex: 1; display: flex; flex-direction: column; min-width: 100px; }
+.form-group label {
+  font-size: 11px; font-weight: 600; color: #86868b;
+  margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.form-group input, .form-group select {
+  padding: 9px 11px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 14px; font-family: inherit; background: #fafafa;
+}
+.form-group input:focus, .form-group select:focus {
+  outline: none; border-color: #0071e3;
+  box-shadow: 0 0 0 3px rgba(0,113,227,0.15); background: #fff;
+}
+
+.toggle-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.toggle-label { font-size: 13px; color: #1d1d1f; }
+
+.file-item {
+  padding: 8px 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  background: #f9f9f9; border-radius: 8px; margin-bottom: 4px; font-size: 13px;
+}
+.file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 100px; }
+.file-item .info { color: #86868b; font-size: 11px; white-space: nowrap; }
+.file-item .drag-handle {
+  cursor: grab; margin-right: 4px; color: #bbb; font-size: 15px;
+  user-select: none; -webkit-user-select: none; line-height: 1;
+}
+.file-item .drag-handle:active { cursor: grabbing; }
+.file-item.drag-over { background: #e0f0ff; box-shadow: 0 0 0 2px #0071e3; }
+.file-item .remove {
+  background: none; border: none; color: #b91c1c; cursor: pointer;
+  font-size: 16px; font-weight: bold; padding: 0 4px;
+}
+.file-item .qty-input {
+  width: 52px; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 12px; font-family: inherit; text-align: center; background: #fff;
+}
+.file-item .qty-input:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.file-item select {
+  padding: 3px 6px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 11px; background: #fff; font-family: inherit;
+}
+.file-item .tag {
+  display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+.tag-face { background: #dbeafe; color: #1e40af; }
+.tag-back { background: #fde8e8; color: #991b1b; }
+.tag-detect { background: #d1fae5; color: #065f46; }
+.tag-white { background: #fef3c7; color: #92400e; }
+.tag-common { background: #e0e7ff; color: #3730a3; }
+.btn-opw {
+  padding: 2px 8px; border: 1px solid #f59e0b; border-radius: 4px;
+  font-size: 10px; font-weight: 600; background: #fffbeb; color: #92400e;
+  cursor: pointer; white-space: nowrap;
+}
+.btn-opw:hover { background: #fef3c7; }
+
+.white-drop {
+  border: 2px dashed #fbbf24; border-radius: 10px; padding: 20px;
+  text-align: center; cursor: pointer; background: #fffbeb; margin-top: 8px;
+}
+.white-drop:hover { border-color: #f59e0b; background: #fef3c7; }
+.white-drop p { font-size: 13px; color: #92400e; }
+.white-drop .sub { font-size: 11px; color: #b45309; }
+.white-drop input { display: none; }
+
+.preview-box {
+  background: #e8e8ed; border-radius: 14px; padding: 16px; text-align: center;
+  min-height: 120px; position: relative; margin-top: 12px;
+}
+.preview-box canvas { max-width: 100%; max-height: 420px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+.sheet-nav { position: absolute; top: 8px; right: 12px; font-size: 12px; color: #666; }
+.sheet-nav button {
+  background: #fff; border: 1px solid #d2d2d7; border-radius: 6px;
+  padding: 3px 10px; cursor: pointer; font-size: 11px; margin: 0 2px; font-weight: 500;
+}
+.sheet-nav button:hover { background: #f0f0f0; }
+
+.btn {
+  display: block; width: 100%; padding: 14px; border: none; border-radius: 12px;
+  font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: center;
+}
+.btn-primary { background: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0077ed; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,113,227,0.3); }
+.btn:disabled { background: #d2d2d7; color: #999; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-row { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.btn-row .btn { flex: 1; min-width: 140px; }
+.btn-white { background: #f59e0b; color: #fff; }
+.btn-white:hover { background: #d97706; }
+.btn-cut { background: #34d399; color: #064e3b; }
+.btn-cut:hover { background: #10b981; }
+
+.status { font-size: 13px; color: #0071e3; margin: 10px 0; text-align: center; font-weight: 500; }
+.info-box {
+  background: #f0f7ff; border: 1px solid #bfdbfe; border-radius: 10px;
+  padding: 10px 14px; margin-top: 8px; font-size: 13px; color: #1e40af; line-height: 1.7;
+}
+.info-box b { color: #0071e3; }
+.note { font-size: 11px; color: #86868b; text-align: center; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Wide Format Imposer</h1>
+    <p>Impose files for flat stock -- colors and resolution preserved</p>
+  </header>
+
+  <!-- STOCK SETUP -->
+  <div class="card">
+    <h2>Stock Setup</h2>
+    <div class="form-row">
+      <div class="form-group"><label>Width (in)</label><input type="number" id="stockW" value="48" min="1" step="0.5"></div>
+      <div class="form-group"><label>Height (in)</label><input type="number" id="stockH" value="96" min="1" step="0.5"></div>
+      <div class="form-group"><label>Gutter (in)</label><input type="number" id="gutter" value="0.125" min="0" step="0.0625"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Client Name</label><input type="text" id="jobName" placeholder="e.g. Konami"></div>
+      <div class="form-group"><label>Job Number</label><input type="text" id="jobNumber" placeholder="e.g. 271778"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Substrate</label><input type="text" id="stockName" placeholder="e.g. Coroplast 4mm"></div>
+      <div class="form-group"><label>Image DPI</label><input type="number" id="imageDPI" value="150" min="72"></div>
+      <div class="form-group"><label>Raster Bleed (in)</label><input type="number" id="rasterBleed" value="0" min="0" step="0.0625"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Master Qty</label><input type="number" id="masterQty" value="1" min="1" max="200"></div>
+      <div class="form-group"><label>Master Orientation</label>
+        <select id="masterOrient">
+          <option value="auto">Auto (engine decides)</option>
+          <option value="portrait">Portrait</option>
+          <option value="landscape">Landscape</option>
+        </select>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label class="toggle-label"><input type="radio" name="printMode" value="single" checked onchange="onPrintModeChange()"> Single-sided</label>
+      <label class="toggle-label"><input type="radio" name="printMode" value="double" onchange="onPrintModeChange()"> Double-sided</label>
+      <span id="flipOptions" style="display:none;font-size:12px;color:#86868b">
+        Flip:
+        <label><input type="radio" name="flipAxis" value="horizontal" checked> Top/Bottom</label>
+        <label style="margin-left:6px"><input type="radio" name="flipAxis" value="vertical"> Left/Right</label>
+      </span>
+    </div>
+    <div id="dblSideMode" style="display:none" class="toggle-row">
+      <label class="toggle-label" style="font-size:12px">Mode:</label>
+      <select id="dblMode" onchange="onDblModeChange()" style="padding:5px 8px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa">
+        <option value="same">Same -- same art both sides</option>
+        <option value="different">Different -- assign face &amp; back</option>
+        <option value="common">Common back -- one file for all backs</option>
+      </select>
+    </div>
+    <!-- Common back drop zone -->
+    <div id="commonBackSection" style="display:none">
+      <div class="white-drop" id="commonBackDrop" style="border-color:#6366f1;background:#eef2ff">
+        <p id="commonBackLabel">Drop common back file here</p>
+        <p class="sub">.pdf .ai .jpg .png .tif</p>
+        <input type="file" id="commonBackInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff">
+      </div>
+    </div>
+  </div>
+
+  <!-- FILE DROP -->
+  <div class="file-drop" id="dropZone">
+    <div class="icon">📄</div>
+    <p>Drop face files here</p>
+    <p class="sub">Accepts .pdf .ai .jpg .png .tif .tiff</p>
+    <input type="file" id="fileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" multiple>
+  </div>
+
+  <!-- FILE LIST -->
+  <div id="filesSection" style="display:none">
+    <div class="card">
+      <h2>Files &amp; Quantities</h2>
+      <div id="fileList"></div>
+    </div>
+  </div>
+  <!-- Hidden OPW file picker -->
+  <input type="file" id="opwFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+
+  <!-- LAYOUT -->
+  <div id="layoutSection" style="display:none">
+    <button class="btn btn-primary" id="arrangeBtn">Arrange Layout</button>
+    <div class="preview-box" id="previewBox" style="display:none">
+      <div class="sheet-nav" id="sheetNav"></div>
+      <canvas id="preview"></canvas>
+    </div>
+    <div id="layoutInfo" class="status"></div>
+    <div id="sheetCalc" class="info-box" style="display:none"></div>
+    <div class="btn-row" id="exportRow" style="display:none">
+      <button class="btn btn-primary" id="printBtn">Download Print PDF</button>
+      <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
+      <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
+    </div>
+    <p class="note">Colors, resolution, and spot channels are preserved -- no rasterization.</p>
+  </div>
+
+</div>
+
+<script>
+const PTS=72, REG_R=0.125*PTS, MARGIN=0.75, KAPPA=0.5522847498;
+const HICKEY_SIZE=0.7, HICKEY_DEPTH=0.36, HICKEY_OFFSET=2.0;
+
+let inputFiles=[], commonBackData=null;
+let fileIdSeq=0, sheets=[], viewSheet=0, viewSide='face', sheetPrintQty=1;
+
+function el(id){return document.getElementById(id);}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtNum(n){return parseFloat(n.toFixed(3)).toString();}
+
+function S(){
+  return {
+    stockW:parseFloat(el('stockW').value)||48, stockH:parseFloat(el('stockH').value)||96,
+    stockName:el('stockName').value.trim(), jobName:el('jobName').value.trim(),
+    jobNumber:el('jobNumber').value.trim(), gutter:parseFloat(el('gutter').value)||0,
+    dpi:parseFloat(el('imageDPI').value)||150, rasterBleed:parseFloat(el('rasterBleed').value)||0,
+    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:MARGIN,
+    doubleSided:document.querySelector('input[name=printMode]:checked').value==='double',
+    flipAxis:document.querySelector('input[name=flipAxis]:checked').value,
+    dblMode:el('dblMode').value,
+  };
+}
+
+function fileName(s){
+  const p=[];
+  if(s.jobNumber)p.push(s.jobNumber);if(s.jobName)p.push(s.jobName);if(s.stockName)p.push(s.stockName);
+  return p.join('_').replace(/[^a-zA-Z0-9_\- ]/g,'')||'imposed';
+}
+
+/* === TIFF DECODE === */
+function decodeTiff(buf){
+  const ifds=UTIF.decode(buf);
+  UTIF.decodeImage(buf,ifds[0]);
+  const ifd=ifds[0];
+  const w=ifd.width, h=ifd.height;
+  const rgba=UTIF.toRGBA8(ifd);
+  // Check if grayscale (all R=G=B for every pixel)
+  let isGray=true;
+  for(let i=0;i<rgba.length;i+=4){if(rgba[i]!==rgba[i+1]||rgba[i]!==rgba[i+2]){isGray=false;break;}}
+  // Convert to PNG bytes for embedding
+  const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext('2d');
+  const imgData=ctx.createImageData(w,h);
+  imgData.data.set(rgba);
+  ctx.putImageData(imgData,0,0);
+  return new Promise(res=>{
+    canvas.toBlob(blob=>{
+      blob.arrayBuffer().then(ab=>{
+        res({pngBytes:new Uint8Array(ab),w,h,isGray,grayData:isGray?extractGray(rgba,w,h):null});
+      });
+    },'image/png');
+  });
+}
+
+function extractGray(rgba,w,h){
+  // Extract just the luminance channel for white plate
+  const gray=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) gray[i]=rgba[i*4];
+  return gray;
+}
+
+/* === PRINT MODE === */
+function onPrintModeChange(){
+  const d=S().doubleSided;
+  el('flipOptions').style.display=d?'':'none';
+  el('dblSideMode').style.display=d?'':'none';
+  el('commonBackSection').style.display=(d&&S().dblMode==='common')?'':'none';
+  if(!d){for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;}}
+  invalidateLayout();renderFileList();
+}
+function onDblModeChange(){
+  const s=S();
+  el('commonBackSection').style.display=(s.doubleSided&&s.dblMode==='common')?'':'none';
+  for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;}
+  invalidateLayout();renderFileList();
+}
+
+/* === MASTER CONTROLS === */
+el('masterQty').addEventListener('change',()=>{
+  const mq=parseInt(el('masterQty').value)||1;
+  for(const f of inputFiles)for(const p of f.pages)if(!p.qtyOverride)p.qty=mq;
+  invalidateLayout();renderFileList();
+});
+el('masterOrient').addEventListener('change',()=>{
+  const mo=el('masterOrient').value;
+  for(const f of inputFiles)for(const p of f.pages)if(!p.orientOverride)p.orient=mo;
+  invalidateLayout();renderFileList();
+});
+el('rasterBleed').addEventListener('change',()=>{
+  const bl=parseFloat(el('rasterBleed').value)||0;
+  for(const f of inputFiles){if(f.type!=='image')continue;
+    for(const p of f.pages){p.bleed=bl;p.trimW=Math.max(0.1,p.physW-2*bl);p.trimH=Math.max(0.1,p.physH-2*bl);}
+  }
+  invalidateLayout();renderFileList();
+});
+
+/* === COMMON BACK === */
+const cbDrop=el('commonBackDrop'),cbInput=el('commonBackInput');
+cbDrop.addEventListener('click',()=>cbInput.click());
+cbDrop.addEventListener('dragover',e=>{e.preventDefault();});
+cbDrop.addEventListener('drop',async e=>{e.preventDefault();await loadCommonBack(e.dataTransfer.files[0]);});
+cbInput.addEventListener('change',async()=>{if(cbInput.files[0])await loadCommonBack(cbInput.files[0]);cbInput.value='';});
+
+async function loadCommonBack(file){
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  let data;
+  if(ext==='pdf'||ext==='ai'){
+    const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+    const pg=doc.getPages()[0];const mb=pg.getMediaBox();
+    data={name:file.name,type:'pdf',bytes,physW:mb.width/PTS,physH:mb.height/PTS};
+  }else if(['tif','tiff'].includes(ext)){
+    const dec=await decodeTiff(bytes.buffer);
+    const s=S();data={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
+      physW:dec.w/s.dpi,physH:dec.h/s.dpi,imageW:dec.w,imageH:dec.h};
+  }else{
+    const blob=new Blob([bytes],{type:file.type});const url=URL.createObjectURL(blob);
+    const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
+    const s=S();const mt=file.type||'image/png';
+    data={name:file.name,type:'image',bytes,mimeType:mt,physW:img.naturalWidth/s.dpi,physH:img.naturalHeight/s.dpi,
+      imageW:img.naturalWidth,imageH:img.naturalHeight};
+  }
+  commonBackData=data;
+  el('commonBackLabel').textContent='Common back: '+file.name;
+  invalidateLayout();
+}
+
+/* === FILE DROP === */
+const dropZone=el('dropZone'),fileInput=el('fileInput');
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>{handleFiles(fileInput.files);fileInput.value='';});
+
+async function handleFiles(fl){
+  for(const file of fl){
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const ext=file.name.split('.').pop().toLowerCase();
+    try{
+      if(ext==='pdf'||ext==='ai') await parsePDF(bytes,file.name);
+      else if(['tif','tiff'].includes(ext)) await parseTiff(bytes,file.name);
+      else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
+    }catch(err){alert(`Could not read ${file.name}: ${err.message}`);}
+  }
+  invalidateLayout();renderFileList();
+}
+
+async function parsePDF(bytes,name){
+  const s=S(),doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+  const pages=doc.getPages(),entry={id:++fileIdSeq,name,type:'pdf',bytes,pages:[]};
+  for(let i=0;i<pages.length;i++){
+    const pg=pages[i],mb=pg.getMediaBox(),tb=pg.getTrimBox();
+    const hasTrim=Math.abs(tb.width-mb.width)>0.5||Math.abs(tb.height-mb.height)>0.5||Math.abs(tb.x-mb.x)>0.5||Math.abs(tb.y-mb.y)>0.5;
+    let physW,physH,trimW,trimH,bleed;
+    if(hasTrim){trimW=tb.width/PTS;trimH=tb.height/PTS;physW=mb.width/PTS;physH=mb.height/PTS;bleed=Math.max(0,Math.min((physW-trimW)/2,(physH-trimH)/2));}
+    else{physW=mb.width/PTS;physH=mb.height/PTS;trimW=physW;trimH=physH;bleed=0;}
+    // Extract die line paths from the PDF
+    const diePaths = extractDiePaths(bytes, doc, i, mb.width, mb.height);
+    entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,
+      qty:s.masterQty,qtyOverride:false,orient:s.masterOrient,orientOverride:false,
+      side:'face',backRef:null});
+  }
+  inputFiles.push(entry);
+}
+
+/* === DIE LINE EXTRACTION === */
+function extractDiePaths(pdfBytes, doc, pageIdx, pageW, pageH){
+  const dieNames = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
+  
+  // Resolve a value through refs
+  function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
+  
+  const pg = doc.getPages()[pageIdx];
+  const node = pg.node;
+  let resDict = resolve(node.get(PDFLib.PDFName.of('Resources')));
+  if(!resDict || !(resDict instanceof PDFLib.PDFDict)) return null;
+  
+  let csDict = resolve(resDict.get(PDFLib.PDFName.of('ColorSpace')));
+  if(!csDict || !(csDict instanceof PDFLib.PDFDict)) return null;
+  
+  // Check each CS entry for die line separations
+  let dieCSNames = [];
+  try {
+    for(const [key, val] of csDict.entries()){
+      let arr = resolve(val);
+      if(arr instanceof PDFLib.PDFArray && arr.size() >= 2){
+        const type = arr.get(0);
+        const sepName = arr.get(1);
+        if(type instanceof PDFLib.PDFName && type.decodeText() === 'Separation' &&
+           sepName instanceof PDFLib.PDFName){
+          const nm = sepName.decodeText();
+          if(dieNames.some(d => nm.toLowerCase() === d.toLowerCase())){
+            dieCSNames.push(key instanceof PDFLib.PDFName ? key.decodeText() : key.toString());
+          }
+        }
+      }
+    }
+  } catch(e){ /* ignore */ }
+  
+  // Fallback: scan raw bytes to find CSn->Separation/DieName mappings
+  if(!dieCSNames.length){
+    try{
+      const raw = new TextDecoder('latin1').decode(pdfBytes);
+      const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
+      for(const m of csRefs){
+        const csName=m[1], objNum=m[2];
+        const idx = raw.indexOf(objNum + ' 0 obj');
+        if(idx < 0) continue;
+        const chunk = raw.substring(idx, idx+300);
+        const chunkLower = chunk.toLowerCase();
+        for(const dn of dieNames){
+          if(chunkLower.includes('/separation/'+dn.toLowerCase()) || chunkLower.includes('/separation /'+dn.toLowerCase())){
+            if(!dieCSNames.includes(csName)) dieCSNames.push(csName);
+          }
+        }
+      }
+    }catch(e){}
+  }
+  
+  if(!dieCSNames.length) return null;
+  
+  // Now parse the content stream to extract paths drawn with those CS names
+  let contentStr = '';
+  try {
+    const contents = resolve(node.get(PDFLib.PDFName.of('Contents')));
+    if(!contents) return null;
+    let streams = [];
+    if(contents instanceof PDFLib.PDFArray){
+      for(let i=0;i<contents.size();i++){
+        const s = resolve(contents.get(i));
+        if(s) streams.push(s);
+      }
+    } else {
+      streams.push(contents);
+    }
+    const parts = [];
+    for(const s of streams){
+      // Try multiple methods to get decoded content
+      let bytes = null;
+      if(s.getUnencodedContents) bytes = s.getUnencodedContents();
+      else if(s.getContents) bytes = s.getContents();
+      else if(s.contents) bytes = s.contents;
+      if(bytes) parts.push(new TextDecoder('latin1').decode(bytes));
+    }
+    contentStr = parts.join('\n');
+  } catch(e){ return null; }
+  
+  if(!contentStr) return null;
+  
+  // Parse: find sections where a die CS is active and extract path operators
+  // Pattern: /CSn CS 1 SCN ... path ops ... S or f or B (stroke/fill)
+  const paths = [];
+  const lines = contentStr.split(/[\r\n]+/);
+  let inDiePath = false;
+  let currentPath = [];
+  let lineWidth = 2.835; // default
+  
+  for(const line of lines){
+    const trimmed = line.trim();
+    
+    // Check for CS switch to die line
+    for(const csName of dieCSNames){
+      if(trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
+         trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')){
+        inDiePath = true;
+        currentPath = [];
+        break;
+      }
+    }
+    
+    // Check for CS switch away from die line, or end of marked content
+    if(inDiePath){
+      if((trimmed.includes(' CS ') && !dieCSNames.some(n => trimmed.includes('/'+n))) ||
+         trimmed === 'EMC' || trimmed === 'Q'){
+        // If we have a path, save it
+        if(currentPath.length > 0){
+          paths.push({ops: [...currentPath], width: lineWidth});
+        }
+        inDiePath = false;
+        currentPath = [];
+        continue;
+      }
+      
+      // Parse width
+      const wMatch = trimmed.match(/^([\d.]+)\s+w\s*$/);
+      if(wMatch) { lineWidth = parseFloat(wMatch[1]); continue; }
+      
+      // Parse path operators
+      // m = moveto, l = lineto, c = curveto, h = closepath, re = rect
+      // S = stroke, f = fill, B = both
+      const mMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+m\s*$/);
+      if(mMatch){ currentPath.push({op:'m', x:parseFloat(mMatch[1]), y:parseFloat(mMatch[2])}); continue; }
+      
+      const lMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+l\s*$/);
+      if(lMatch){ currentPath.push({op:'l', x:parseFloat(lMatch[1]), y:parseFloat(lMatch[2])}); continue; }
+      
+      const cMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+c\s*$/);
+      if(cMatch){ currentPath.push({op:'c', x1:parseFloat(cMatch[1]),y1:parseFloat(cMatch[2]),
+        x2:parseFloat(cMatch[3]),y2:parseFloat(cMatch[4]),
+        x3:parseFloat(cMatch[5]),y3:parseFloat(cMatch[6])}); continue; }
+      
+      if(trimmed === 'h'){ currentPath.push({op:'h'}); continue; }
+      
+      const reMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+re\s*$/);
+      if(reMatch){ currentPath.push({op:'re', x:parseFloat(reMatch[1]),y:parseFloat(reMatch[2]),
+        w:parseFloat(reMatch[3]),h:parseFloat(reMatch[4])}); continue; }
+      
+      if(trimmed === 'S' || trimmed === 'f' || trimmed === 'B'){
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
+        currentPath = [];
+        continue;
+      }
+      
+      // Handle cm (transform) — apply to subsequent coordinates
+      const cmMatch = trimmed.match(/^q\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(cmMatch){
+        currentPath.push({op:'cm', a:parseFloat(cmMatch[1]),b:parseFloat(cmMatch[2]),
+          c:parseFloat(cmMatch[3]),d:parseFloat(cmMatch[4]),
+          e:parseFloat(cmMatch[5]),f:parseFloat(cmMatch[6])});
+        continue;
+      }
+      // Bare cm without q
+      const cmMatch2 = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(cmMatch2){
+        currentPath.push({op:'cm', a:parseFloat(cmMatch2[1]),b:parseFloat(cmMatch2[2]),
+          c:parseFloat(cmMatch2[3]),d:parseFloat(cmMatch2[4]),
+          e:parseFloat(cmMatch2[5]),f:parseFloat(cmMatch2[6])});
+      }
+    }
+  }
+  // Catch any remaining path
+  if(inDiePath && currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+  
+  return paths.length > 0 ? {paths, pageW, pageH} : null;
+}
+
+async function parseTiff(bytes,name){
+  const dec=await decodeTiff(bytes.buffer);
+  const s=S(),physW=dec.w/s.dpi,physH=dec.h/s.dpi,bl=s.rasterBleed;
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
+    imageW:dec.w,imageH:dec.h,
+    pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi:s.dpi,hasTrim:false,
+      orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+async function parseRaster(bytes,name,mimeType){
+  const blob=new Blob([bytes],{type:mimeType}),url=URL.createObjectURL(blob);
+  const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
+  const s=S(),physW=img.naturalWidth/s.dpi,physH=img.naturalHeight/s.dpi,bl=s.rasterBleed;
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes,mimeType,
+    imageW:img.naturalWidth,imageH:img.naturalHeight,
+    pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi:s.dpi,hasTrim:false,
+      orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+/* === OPW (Opaque White Plate) === */
+let opwTargetFileId=null, opwTargetPageIndex=null;
+const opwInput=el('opwFileInput');
+opwInput.addEventListener('change',async()=>{
+  if(!opwInput.files[0]||opwTargetFileId===null)return;
+  const file=opwInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const f=inputFiles.find(x=>x.id===opwTargetFileId);if(!f)return;
+  const p=f.pages.find(x=>x.index===opwTargetPageIndex);if(!p)return;
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      p.opw={name:file.name,type:'pdf',bytes};
+    }else if(['tif','tiff'].includes(ext)){
+      const dec=await decodeTiff(bytes.buffer);
+      p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
+    }else{
+      p.opw={name:file.name,type:'image',bytes,mimeType:file.type||'image/png'};
+    }
+  }catch(err){alert('Could not read OPW file: '+err.message);}
+  opwInput.value='';opwTargetFileId=null;opwTargetPageIndex=null;
+  renderFileList();
+});
+
+function pickOPW(fid,pidx){
+  opwTargetFileId=fid;opwTargetPageIndex=pidx;
+  opwInput.click();
+}
+function removeOPW(fid,pidx){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  const p=f.pages.find(x=>x.index===pidx);if(!p)return;
+  p.opw=null;renderFileList();
+}
+
+/* === FILE LIST === */
+function renderFileList(){
+  if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
+  el('filesSection').style.display='';el('layoutSection').style.display='';
+  const s=S(),isDbl=s.doubleSided,isDblDiff=isDbl&&s.dblMode==='different';
+  let faceOpts=[];
+  if(isDblDiff)for(const f of inputFiles)for(const p of f.pages)
+    if(p.side==='face')faceOpts.push({fileId:f.id,pageIndex:p.index,label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')});
+
+  let qtyIdx=100;
+  const flatRows=[];for(const f of inputFiles)for(const p of f.pages)flatRows.push({fileId:f.id,pageIndex:p.index});
+  let html='';
+  for(let ri=0;ri<flatRows.length;ri++){
+    const row=flatRows[ri],f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
+    const p=f.pages.find(x=>x.index===row.pageIndex);if(!p)continue;
+    const pgL=f.pages.length>1?` p${p.index+1}`:'';
+    const isBack=isDblDiff&&p.side==='back';
+    html+=`<div class="file-item" draggable="true" data-ri="${ri}" ondragstart="onDragStart(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">`;
+    html+=`<span class="drag-handle">&#9776;</span>`;
+    html+=`<span class="name">${esc(f.name)}${pgL}</span>`;
+    html+=`<span class="info">${p.physW.toFixed(1)}" x ${p.physH.toFixed(1)}"</span>`;
+    if(p.hasTrim)html+=` <span class="tag tag-detect">Bleed ${fmtNum(p.bleed)}"</span>`;
+    else if(f.type==='image'&&p.bleed>0)html+=` <span class="info">Bleed ${fmtNum(p.bleed)}"</span>`;
+    html+=` <span class="info">Trim ${p.trimW.toFixed(1)}" x ${p.trimH.toFixed(1)}"</span>`;
+    if(p.diePaths) html+=` <span class="tag tag-detect">Die detected</span>`;
+    // OPW white plate
+    if(p.opw){
+      html+=` <span class="tag tag-white">OPW: ${esc(p.opw.name.substring(0,18))}</span>`;
+      html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPW(${f.id},${p.index})">x</button>`;
+    } else {
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPW(${f.id},${p.index})">+ OPW</button>`;
+    }
+    // Orientation
+    html+=` <select onchange="updatePage(${f.id},${p.index},'orient',this.value)">`;
+    html+=`<option value="auto" ${p.orient==='auto'?'selected':''}>Auto</option>`;
+    html+=`<option value="portrait" ${p.orient==='portrait'?'selected':''}>Port</option>`;
+    html+=`<option value="landscape" ${p.orient==='landscape'?'selected':''}>Land</option></select>`;
+    if(isDblDiff){
+      html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'side',this.value)">`;
+      html+=`<option value="face" ${p.side==='face'?'selected':''}>Face</option><option value="back" ${p.side==='back'?'selected':''}>Back</option></select>`;
+      if(p.side==='back'){
+        html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'backRef',this.value)"><option value="">--pair--</option>`;
+        for(const fo of faceOpts){const v=`${fo.fileId}-${fo.pageIndex}`;
+          html+=`<option value="${v}" ${p.backRef&&p.backRef.fileId===fo.fileId&&p.backRef.pageIndex===fo.pageIndex?'selected':''}>${esc(fo.label)}</option>`;}
+        html+=`</select> <span class="tag tag-back">BACK</span>`;
+      }else html+=` <span class="tag tag-face">FACE</span>`;
+    }
+    if(isDbl&&s.dblMode==='common')html+=` <span class="tag tag-common">+common back</span>`;
+    if(!isBack)html+=` <input type="number" class="qty-input" value="${p.qty}" min="0" max="200" tabindex="${qtyIdx++}" placeholder="qty" onchange="updatePage(${f.id},${p.index},'qty',this.value)">`;
+    else if(isDblDiff&&p.backRef){const pf=inputFiles.find(x=>x.id===p.backRef.fileId);if(pf){const pp=pf.pages.find(x=>x.index===p.backRef.pageIndex);if(pp)html+=` <span class="info">qty: ${pp.qty} (follows face)</span>`;}}
+    html+=` <button class="remove" tabindex="-1" onclick="removeFile(${f.id},${p.index})">&times;</button></div>`;
+  }
+  el('fileList').innerHTML=html;
+}
+
+function updatePage(fid,pidx,field,val){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  const p=f.pages.find(x=>x.index===pidx);if(!p)return;
+  if(field==='qty'){p.qty=Math.max(0,parseInt(val)||0);p.qtyOverride=true;}
+  else if(field==='orient'){p.orient=val;p.orientOverride=(val!==S().masterOrient);}
+  else if(field==='side'){p.side=val;if(val==='face')p.backRef=null;}
+  else if(field==='backRef'){if(val){const[a,b]=val.split('-').map(Number);p.backRef={fileId:a,pageIndex:b};}else p.backRef=null;}
+  invalidateLayout();renderFileList();
+}
+function removeFile(fid,pidx){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  if(f.pages.length<=1){for(const ff of inputFiles)for(const pp of ff.pages)if(pp.backRef&&pp.backRef.fileId===fid)pp.backRef=null;inputFiles=inputFiles.filter(x=>x.id!==fid);}
+  else f.pages=f.pages.filter(x=>x.index!==pidx);
+  invalidateLayout();renderFileList();
+}
+function invalidateLayout(){
+  sheets=[];viewSheet=0;viewSide='face';sheetPrintQty=1;
+  el('previewBox').style.display='none';el('exportRow').style.display='none';
+  el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
+}
+
+/* === DRAG SORT === */
+let dragSrcRi=null;
+function buildFlatIndex(){const r=[];for(const f of inputFiles)for(const p of f.pages)r.push({fileId:f.id,pageIndex:p.index});return r;}
+function onDragStart(e){dragSrcRi=parseInt(e.currentTarget.dataset.ri);e.dataTransfer.effectAllowed='move';e.currentTarget.style.opacity='0.4';}
+function onDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move';e.currentTarget.classList.add('drag-over');}
+function onDragLeave(e){e.currentTarget.classList.remove('drag-over');}
+function onDrop(e){
+  e.preventDefault();e.currentTarget.classList.remove('drag-over');
+  const dest=parseInt(e.currentTarget.dataset.ri);if(dragSrcRi===null||dragSrcRi===dest)return;
+  const flat=buildFlatIndex(),src=flat[dragSrcRi];flat.splice(dragSrcRi,1);flat.splice(dest,0,src);
+  const nf=[],seen=new Set();
+  for(const row of flat){const f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
+    if(!seen.has(f.id)){seen.add(f.id);const pages=flat.filter(r=>r.fileId===f.id).map(r=>f.pages.find(p=>p.index===r.pageIndex)).filter(Boolean);nf.push({...f,pages});}}
+  inputFiles=nf;dragSrcRi=null;invalidateLayout();renderFileList();
+}
+
+/* === ORIENTATION === */
+function resolveOrientation(p,sW,sH,forceRotated){
+  let orient=p.orient||'auto';const pw=p.physW,ph=p.physH;
+  if(forceRotated!==undefined) return forceRotated?{w:ph,h:pw,rotated:true}:{w:pw,h:ph,rotated:false};
+  if(orient==='portrait')return ph>=pw?{w:pw,h:ph,rotated:false}:{w:ph,h:pw,rotated:true};
+  if(orient==='landscape')return pw>=ph?{w:pw,h:ph,rotated:false}:{w:ph,h:pw,rotated:true};
+  // orient==='auto' — caller will try both and pick best
+  return{w:pw,h:ph,rotated:false};
+}
+
+/* === PIECES === */
+function collectPieces(forceRotated){
+  const s=S(),isDblDiff=s.doubleSided&&s.dblMode==='different',items=[];
+  for(const f of inputFiles)for(const p of f.pages){
+    if(isDblDiff&&p.side==='back')continue;
+    const isAuto = !p.orient || p.orient==='auto';
+    const ori=resolveOrientation(p,s.stockW,s.stockH, isAuto ? forceRotated : undefined);
+    const trimW=ori.rotated?p.trimH:p.trimW,trimH=ori.rotated?p.trimW:p.trimH;
+    for(let q=0;q<p.qty;q++)items.push({
+      fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:p.bleed,rotated:ori.rotated,
+      diePaths:p.diePaths||null,
+      label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')+(p.qty>1?` #${q+1}`:''),
+    });
+  }
+  return items;
+}
+
+/* === PACKING === */
+function packSheet(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>b.h-a.h||b.w-a.w);
+  const placed=[],unplaced=[];let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    if(it.w>bW+.001||it.h>bH+.001){unplaced.push(it);continue;}
+    if(cX+it.w>bW+.001){cX=0;cY+=rH+gut;rH=0;}
+    if(cY+it.h>bH+.001){unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY});cX+=it.w+gut;rH=Math.max(rH,it.h);
+  }
+  return{placed,unplaced};
+}
+function centerPlacements(pl,bW,bH){
+  if(!pl.length)return;let mX=0,mY=0;for(const p of pl){mX=Math.max(mX,p.x+p.w);mY=Math.max(mY,p.y+p.h);}
+  const ox=(bW-mX)/2,oy=(mY<bH*0.5)?0:(bH-mY)/2;for(const p of pl){p.x+=ox;p.y+=oy;}
+}
+
+function arrangeLayout(){
+  const s=S(),cW=s.stockW-2*s.margin,cH=s.stockH-2*s.margin;
+
+  // Try both orientations for auto-mode files, pick whichever fits more per sheet
+  const hasAuto = inputFiles.some(f=>f.pages.some(p=>!p.orient||p.orient==='auto'));
+  let bestItems;
+  if(hasAuto){
+    const itemsNormal=collectPieces(false);
+    const itemsRotated=collectPieces(true);
+    // Test pack one sheet each way
+    const packNormal=packSheet(itemsNormal,cW,cH,s.gutter);
+    const packRotated=packSheet(itemsRotated,cW,cH,s.gutter);
+    bestItems = packRotated.placed.length > packNormal.placed.length ? collectPieces(true) : collectPieces(false);
+  } else {
+    bestItems=collectPieces();
+  }
+
+  let items=bestItems;
+  if(!items.length){el('layoutInfo').textContent='No pieces.';return;}
+  sheets=[];let too=[];
+  while(items.length>0){const{placed,unplaced}=packSheet(items,cW,cH,s.gutter);if(!placed.length){too=unplaced;break;}centerPlacements(placed,cW,cH);sheets.push({placements:placed});items=unplaced;}
+
+  // Deduplicate identical sheets: if all sheets have the same file/page composition,
+  // collapse to one sheet and multiply the print count
+  if(sheets.length>1){
+    const sheetSig = sh => sh.placements.map(p=>p.fileId+':'+p.pageIndex).sort().join(',');
+    const sigs = sheets.map(sheetSig);
+    const firstSig = sigs[0];
+    let identicalCount = 1;
+    for(let i=1;i<sigs.length;i++){if(sigs[i]===firstSig)identicalCount++;else break;}
+    // If all identical, collapse to 1. If some identical at the start, keep the unique remainder.
+    if(identicalCount===sheets.length){
+      sheets=[sheets[0]];
+    } else if(identicalCount>1){
+      // First N are identical, rest are different (the remainder sheet)
+      const remainder=sheets.slice(identicalCount);
+      sheets=[sheets[0],...remainder];
+    }
+  }
+
+  const pps=sheets.length>0?sheets[0].placements.length:0;
+  const totalNeeded=bestItems.length;
+  // Calculate per-sheet print counts
+  // Sheet 0 (the main repeated sheet): floor(totalNeeded / pps)
+  // If there's a remainder sheet, it prints once
+  if(sheets.length===1){
+    sheetPrintQty=pps>0?Math.ceil(totalNeeded/pps):1;
+    sheets[0].printQty=sheetPrintQty;
+  } else {
+    // Multiple unique sheets — each prints once unless we collapsed identical ones
+    const mainPPS=sheets[0].placements.length;
+    const mainPrints=Math.floor(totalNeeded/mainPPS);
+    const remainder=totalNeeded-mainPrints*mainPPS;
+    sheets[0].printQty=mainPrints>0?mainPrints:1;
+    for(let i=1;i<sheets.length;i++) sheets[i].printQty=1;
+    sheetPrintQty=sheets[0].printQty; // for slug display
+  }
+  viewSheet=0;viewSide='face';drawPreview();
+  let info=`${pps} up per sheet`;if(s.doubleSided)info+=' | Double-sided';if(too.length)info+=` | ${too.length} too large!`;
+  el('layoutInfo').textContent=info;
+  const cd=el('sheetCalc');cd.style.display='';const tp=pps*sheetPrintQty;
+  cd.innerHTML=`<b>${pps}</b> per sheet x <b>Print ${sheetPrintQty} times</b> = <b>${tp}</b> total`+(tp>totalNeeded?` (${tp-totalNeeded} extra)`:'');
+  el('previewBox').style.display='';el('exportRow').style.display=pps>0?'flex':'none';
+  // Show OPW button if any face page has a white plate
+  const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
+  el('opwBtn').style.display=hasOPW?'':'none';
+  // Hide Cut button if ALL placed pieces have extracted die paths (die lines are in the print file)
+  const allHaveDie=sheets.length>0 && sheets.every(sh=>sh.placements.every(p=>p.diePaths && p.diePaths.paths && p.diePaths.paths.length>0));
+  el('cutBtn').style.display=allHaveDie?'none':'';
+}
+
+/* === MARKS === */
+function getRegDots(W,H){const i=.375,g=3.0;return[{x:i,y:i},{x:i+g,y:i},{x:W-i,y:i},{x:i,y:H-i},{x:W-i,y:H-i}];}
+function getHickeys(W,H){
+  const sz=HICKEY_SIZE,dp=HICKEY_DEPTH,off=HICKEY_OFFSET;
+  return[
+    {x1:off+sz/2,y1:0,x2:off,y2:dp,x3:off+sz,y3:dp},
+    {x1:0,y1:off+sz/2,x2:dp,y2:off,x3:dp,y3:off+sz},
+    {x1:W,y1:off+sz/2,x2:W-dp,y2:off,x3:W-dp,y3:off+sz},
+    {x1:0,y1:H-off-sz/2,x2:dp,y2:H-off-sz,x3:dp,y3:H-off},
+    {x1:off+sz/2,y1:H,x2:off,y2:H-dp,x3:off+sz,y3:H-dp},
+    {x1:W-off-sz/2,y1:H,x2:W-off-sz,y2:H-dp,x3:W-off,y3:H-dp},
+    {x1:W,y1:H-off-sz/2,x2:W-dp,y2:H-off-sz,x3:W-dp,y3:H-off},
+  ];
+}
+
+/* === PREVIEW === */
+function drawPreview(){
+  const s=S(),canvas=el('preview');if(!sheets.length){canvas.width=0;return;}
+  const sheet=sheets[viewSheet]||sheets[0],maxW=680,maxH=420,scale=Math.min(maxW/s.stockW,maxH/s.stockH);
+  canvas.width=Math.ceil(s.stockW*scale);canvas.height=Math.ceil(s.stockH*scale);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d2d2d7';ctx.setLineDash([4,3]);ctx.strokeRect(s.margin*scale,s.margin*scale,(s.stockW-2*s.margin)*scale,(s.stockH-2*s.margin)*scale);ctx.setLineDash([]);
+  for(const p of sheet.placements){
+    let px,py;
+    if(viewSide==='back'){if(s.flipAxis==='horizontal'){px=s.margin+p.x;py=s.stockH-s.margin-p.y-p.h;}else{px=s.stockW-s.margin-p.x-p.w;py=s.margin+p.y;}}
+    else{px=s.margin+p.x;py=s.margin+p.y;}
+    const x=px*scale,y=py*scale,w=p.w*scale,h=p.h*scale;
+    ctx.fillStyle=viewSide==='back'?'#fef2f2':'#eff6ff';ctx.fillRect(x,y,w,h);
+    if(p.bleed>0){ctx.strokeStyle='#e040a0';ctx.lineWidth=1.5;ctx.strokeRect(x+p.bleed*scale,y+p.bleed*scale,p.trimW*scale,p.trimH*scale);}
+    else{ctx.strokeStyle='#0071e3';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);}
+    ctx.fillStyle='#666';ctx.font=`${Math.max(7,Math.min(11,w/12))}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    let lbl=viewSide==='back'?'(B) '+p.label:p.label;if(lbl.length>24)lbl=lbl.substring(0,22)+'...';
+    ctx.fillText(lbl,x+w/2,y+h/2);
+  }
+  ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#1d1d1f';for(const h of getHickeys(s.stockW,s.stockH)){ctx.beginPath();ctx.moveTo(h.x1*scale,h.y1*scale);ctx.lineTo(h.x2*scale,h.y2*scale);ctx.lineTo(h.x3*scale,h.y3*scale);ctx.closePath();ctx.fill();}
+  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,9*scale)}px sans-serif`;ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),(s.margin+3.5)*scale,0.1*scale);
+  const nav=el('sheetNav');let nh='';
+  if(sheets.length>1)nh+=`Sheet ${viewSheet+1}/${sheets.length} <button onclick="prevSheet()">&#9664;</button><button onclick="nextSheet()">&#9654;</button>`;
+  if(s.doubleSided)nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
+  nav.innerHTML=nh;
+}
+
+function buildSlug(s,si,side){
+  const p=[];if(s.jobName)p.push(s.jobName);if(s.jobNumber)p.push('#'+s.jobNumber);if(s.stockName)p.push(s.stockName);
+  if(s.doubleSided)p.push(side+' -- Flip '+s.flipAxis);
+  const pq=sheets[si]?sheets[si].printQty||1:sheetPrintQty;
+  p.push('Print '+pq+' times');
+  if(sheets.length>1)p.push('Sheet '+(si+1)+' of '+sheets.length);
+  return p.join('  |  ');
+}
+function prevSheet(){if(viewSheet>0){viewSheet--;drawPreview();}}
+function nextSheet(){if(viewSheet<sheets.length-1){viewSheet++;drawPreview();}}
+function toggleSide(){viewSide=viewSide==='face'?'back':'face';drawPreview();}
+
+function findBackSource(p){
+  const s=S();if(!s.doubleSided)return null;
+  if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
+  if(s.dblMode==='common')return commonBackData?{common:true}:null;
+  const f=inputFiles.find(x=>x.id===p.fileId);if(!f)return null;
+  const pg=f.pages.find(x=>x.index===p.pageIndex);if(!pg||!pg.backRef)return null;
+  return{fileId:pg.backRef.fileId,pageIndex:pg.backRef.pageIndex};
+}
+
+/* === EXPORT PRINT PDF === */
+async function exportPrintPDF(){
+  const btn=el('printBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    const fontB=await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    const cache=new Map(),used=new Set();
+    for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+    for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){const sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}}
+      else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
+    // Embed common back if needed
+    let commonEmbed=null;
+    if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
+      if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
+      else{let e;if(commonBackData.mimeType==='image/jpeg')e=await outDoc.embedJpg(commonBackData.bytes);else e=await outDoc.embedPng(commonBackData.bytes);commonEmbed={ref:e,kind:'image'};}
+    }
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
+      if(s.doubleSided){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back');}
+    }
+    download(await outDoc.save(),fileName(s)+'_Print.pdf');
+  }catch(err){alert('Export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download Print PDF';
+}
+
+function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
+  for(const p of sheet.placements){
+    let c;
+    if(side==='back'){
+      const bk=findBackSource(p);if(!bk)continue;
+      if(bk.common){c=commonEmbed;if(!c)continue;}
+      else{c=cache.get(`${bk.fileId}-${bk.pageIndex}`);if(!c)continue;}
+    }else{c=cache.get(`${p.fileId}-${p.pageIndex}`);if(!c)continue;}
+    const w=p.w*PTS,h=p.h*PTS;
+    if(side==='face'){
+      const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+      drawItem(page,c,x,y,p,Wp,Hp);
+    }else{
+      const fX=(s.margin+p.x)*PTS,fY=Hp-(s.margin+p.y+p.h)*PTS;
+      let bx,by;
+      if(s.flipAxis==='horizontal'){
+        bx=fX;by=Hp-fY-h;
+        const cx=bx+w/2,cy=by+h/2;
+        page.pushOperators(PDFLib.pushGraphicsState(),PDFLib.concatTransformationMatrix(1,0,0,1,cx,cy),PDFLib.concatTransformationMatrix(-1,0,0,-1,0,0),PDFLib.concatTransformationMatrix(1,0,0,1,-cx,-cy));
+        drawItem(page,c,bx,by,p,Wp,Hp);
+        page.pushOperators(PDFLib.popGraphicsState());
+      }else{
+        bx=Wp-fX-w;by=fY;
+        drawItem(page,c,bx,by,p,Wp,Hp);
+      }
+    }
+  }
+}
+
+function drawItem(page,c,x,y,p,Wp,Hp){
+  const w=p.w*PTS,h=p.h*PTS;
+  if(p.rotated){
+    // The source page is physW x physH (not rotated). We need to draw it rotated 90° CW
+    // into a w x h box where w=physH*72, h=physW*72.
+    // Rotate 90° CW around the placement center: translate to position, rotate, draw at native dims
+    const srcW=p.h*PTS, srcH=p.w*PTS; // native source dimensions (unrotated)
+    page.pushOperators(PDFLib.pushGraphicsState(),
+      // Move origin to bottom-left of placement, then rotate 90° CW
+      PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h),
+    );
+    // Now draw at native dimensions — the rotation maps it into the rotated box
+    if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:srcW,height:srcH});
+    else page.drawImage(c.ref,{x:0,y:0,width:srcW,height:srcH});
+    page.pushOperators(PDFLib.popGraphicsState());
+  } else {
+    if(c.kind==='page') page.drawPage(c.ref,{x,y,width:w,height:h});
+    else page.drawImage(c.ref,{x,y,width:w,height:h});
+  }
+}
+
+function placeMarks(page,s,Wp,Hp,font,si,sideLabel){
+  const black=PDFLib.cmyk(0,0,0,1);
+  for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+  for(const h of getHickeys(s.stockW,s.stockH)){
+    page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
+  }
+  if(s.doubleSided){
+    const ax=(s.stockW-s.margin-0.5)*PTS,ay=0.45*PTS-5,sh=16,hw=5,hl=8;
+    if(s.flipAxis==='horizontal'){
+      page.drawSvgPath(`M ${ax} ${ay-sh} L ${ax} ${ay+sh}`,{x:0,y:Hp,borderColor:black,borderWidth:2});
+      page.drawSvgPath(`M ${ax} ${ay+sh+hl} L ${ax-hw} ${ay+sh} L ${ax+hw} ${ay+sh} Z`,{x:0,y:Hp,color:black});
+      page.drawSvgPath(`M ${ax} ${ay-sh-hl} L ${ax-hw} ${ay-sh} L ${ax+hw} ${ay-sh} Z`,{x:0,y:Hp,color:black});
+    }else{
+      page.drawSvgPath(`M ${ax-sh} ${ay} L ${ax+sh} ${ay}`,{x:0,y:Hp,borderColor:black,borderWidth:2});
+      page.drawSvgPath(`M ${ax+sh+hl} ${ay} L ${ax+sh} ${ay+hw} L ${ax+sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
+      page.drawSvgPath(`M ${ax-sh-hl} ${ay} L ${ax-sh} ${ay+hw} L ${ax-sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
+    }
+  }
+  page.drawText(buildSlug(s,si,sideLabel),{x:3.5*PTS,y:Hp-0.45*PTS,size:20,font,color:black});
+}
+
+/* === EXPORT OPW PDF === */
+async function exportOPWPDF(){
+  const btn=el('opwBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    const fontB=await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+    // Embed OPW sources — keyed by fileId-pageIndex, same as process
+    const opwCache=new Map();
+    for(const f of inputFiles)for(const p of f.pages){
+      if(!p.opw)continue;
+      const key=`${f.id}-${p.index}`;
+      if(p.opw.type==='pdf'){
+        const sd=await PDFLib.PDFDocument.load(p.opw.bytes,{ignoreEncryption:true});
+        const[e]=await outDoc.embedPages([sd.getPages()[0]]);
+        opwCache.set(key,{ref:e,kind:'page'});
+      }else{
+        let e;
+        if(p.opw.mimeType==='image/jpeg'||p.opw.mimeType==='image/jpg')e=await outDoc.embedJpg(p.opw.bytes);
+        else e=await outDoc.embedPng(p.opw.bytes);
+        opwCache.set(key,{ref:e,kind:'image'});
+      }
+    }
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const pg=outDoc.addPage([Wp,Hp]);
+
+      // Place OPW plates at identical positions to process file
+      for(const p of sheet.placements){
+        const key=`${p.fileId}-${p.pageIndex}`;
+        const c=opwCache.get(key);
+        if(!c)continue;
+        const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+        drawItem(pg,c,x,y,p,Wp,Hp);
+      }
+
+      // Same marks as process sheet (reg dots, hickeys, slug)
+      placeMarks(pg,s,Wp,Hp,fontB,si,'OPW');
+    }
+
+    download(await outDoc.save(),fileName(s)+'_OPW.pdf');
+  }catch(err){alert('OPW export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download OPW PDF';
+}
+
+/* === EXPORT CUT PDF === */
+function exportCutPDF(){
+  const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+  const sd=sheets.map(sheet=>{
+    const cuts=[];
+    for(const p of sheet.placements){
+      const posX=(s.margin+p.x)*PTS;
+      const posY=Hp-(s.margin+p.y+p.h)*PTS;
+      const pw=p.w*PTS, ph=p.h*PTS;
+      if(p.diePaths){
+        // Use extracted die line paths, translated to imposed position
+        // Source coords are in the page's own coordinate system (bottom-left origin)
+        // We need to scale and translate to the imposed position
+        const srcW=p.diePaths.pageW, srcH=p.diePaths.pageH;
+        const scaleX=pw/srcW, scaleY=ph/srcH;
+        for(const path of p.diePaths.paths){
+          const translated=translateDiePath(path, posX, posY, scaleX, scaleY, srcH, ph);
+          cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY)});
+        }
+      } else {
+        // Fall back to rectangular cut from trim dimensions
+        const cutX=(s.margin+p.x+p.bleed)*PTS;
+        const cutY=Hp-(s.margin+p.y+p.bleed+p.trimH)*PTS;
+        cuts.push({type:'rect', x:cutX, y:cutY, w:p.trimW*PTS, h:p.trimH*PTS});
+      }
+    }
+    const dots=getRegDots(s.stockW,s.stockH).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
+    return{cuts,dots};
+  });
+  download(buildCutPDF(sd,Wp,Hp),fileName(s)+'_Cut.pdf');
+}
+
+function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH){
+  // Transform path ops from source page coords to imposed position
+  // Source: bottom-left origin, coords relative to page
+  // Destination: bottom-left origin, offset by (offsetX, offsetY)
+  // Apply cm transforms if present, then scale and translate
+  const ops = [];
+  let cmTx=0, cmTy=0; // current transform offset from cm operators
+  
+  for(const op of path.ops){
+    if(op.op==='cm'){
+      // Simple translation transform: a=1,b=0,c=0,d=1,e=tx,f=ty
+      cmTx=op.e; cmTy=op.f;
+      continue;
+    }
+    if(op.op==='m'){
+      ops.push({op:'m', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY});
+    } else if(op.op==='l'){
+      ops.push({op:'l', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY});
+    } else if(op.op==='c'){
+      ops.push({op:'c',
+        x1:(op.x1+cmTx)*scaleX+offsetX, y1:(op.y1+cmTy)*scaleY+offsetY,
+        x2:(op.x2+cmTx)*scaleX+offsetX, y2:(op.y2+cmTy)*scaleY+offsetY,
+        x3:(op.x3+cmTx)*scaleX+offsetX, y3:(op.y3+cmTy)*scaleY+offsetY});
+    } else if(op.op==='h'){
+      ops.push({op:'h'});
+    } else if(op.op==='re'){
+      ops.push({op:'re', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY,
+        w:op.w*scaleX, h:op.h*scaleY});
+    }
+  }
+  return {ops};
+}
+
+function buildCutPDF(sd,W,H){
+  const R=REG_R,K=KAPPA,n=sd.length,f=v=>v.toFixed(4);
+  function circ(cx,cy,r){return`${f(cx+r)} ${f(cy)} m ${f(cx+r)} ${f(cy+r*K)} ${f(cx+r*K)} ${f(cy+r)} ${f(cx)} ${f(cy+r)} c ${f(cx-r*K)} ${f(cy+r)} ${f(cx-r)} ${f(cy+r*K)} ${f(cx-r)} ${f(cy)} c ${f(cx-r)} ${f(cy-r*K)} ${f(cx-r*K)} ${f(cy-r)} ${f(cx)} ${f(cy-r)} c ${f(cx+r*K)} ${f(cy-r)} ${f(cx+r)} ${f(cy-r*K)} ${f(cx+r)} ${f(cy)} c f\n`;}
+  const tot=3+2*n,pids=[];for(let i=0;i<n;i++)pids.push(5+2*i);
+  let pdf='%PDF-1.4\n';const offs=[];
+  function wo(id,b){offs[id-1]=pdf.length;pdf+=`${id} 0 obj\n${b}\nendobj\n`;}
+  wo(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  wo(2,`<< /Type /Pages /Kids [${pids.map(i=>i+' 0 R').join(' ')}] /Count ${n} >>`);
+  wo(3,'[/Separation /CutContour /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 0 0] /N 1 >>]');
+  for(let i=0;i<n;i++){
+    const sh=sd[i];let s='/CutContour CS\n1 SCN\n2.835 w\n';
+    for(const c of sh.cuts){
+      if(c.type==='rect'){
+        s+=`${f(c.x)} ${f(c.y)} ${f(c.w)} ${f(c.h)} re S\n`;
+      } else if(c.type==='path'){
+        // Set the extracted path's line width
+        s+=`${f(c.width||2.835)} w\n`;
+        for(const op of c.ops){
+          if(op.op==='m') s+=`${f(op.x)} ${f(op.y)} m\n`;
+          else if(op.op==='l') s+=`${f(op.x)} ${f(op.y)} l\n`;
+          else if(op.op==='c') s+=`${f(op.x1)} ${f(op.y1)} ${f(op.x2)} ${f(op.y2)} ${f(op.x3)} ${f(op.y3)} c\n`;
+          else if(op.op==='h') s+='h\n';
+          else if(op.op==='re') s+=`${f(op.x)} ${f(op.y)} ${f(op.w)} ${f(op.h)} re\n`;
+        }
+        s+='S\n';
+      }
+    }
+    s+='0 0 0 1 k\n';for(const d of sh.dots)s+=circ(d.cx,d.cy,R);
+    const sid=4+2*i,pid=5+2*i;
+    wo(sid,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
+    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << /CutContour 3 0 R >> >> >>`);
+  }
+  const xo=pdf.length;pdf+=`xref\n0 ${tot+1}\n0000000000 65535 f \n`;
+  for(let i=0;i<tot;i++)pdf+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
+  pdf+=`trailer\n<< /Size ${tot+1} /Root 1 0 R >>\nstartxref\n${xo}\n%%EOF`;
+  const b=new Uint8Array(pdf.length);for(let i=0;i<pdf.length;i++)b[i]=pdf.charCodeAt(i);return b;
+}
+
+function download(bytes,name){
+  const blob=new Blob([bytes],{type:'application/pdf'}),url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url);a.remove();},500);
+}
+
+el('arrangeBtn').addEventListener('click',arrangeLayout);
+el('printBtn').addEventListener('click',exportPrintPDF);
+el('opwBtn').addEventListener('click',exportOPWPDF);
+el('cutBtn').addEventListener('click',exportCutPDF);
+</script>
+</body>
+</html>
