@@ -1057,7 +1057,11 @@ function drawPreview(){
   ctx.strokeStyle='#d2d2d7';ctx.setLineDash([4,3]);ctx.strokeRect(s.margin*scale,s.margin*scale,(s.stockW-2*s.margin)*scale,(s.stockH-2*s.margin)*scale);ctx.setLineDash([]);
   for(const p of sheet.placements){
     let px,py;
-    if(viewSide==='back'){if(s.flipAxis==='horizontal'){px=s.margin+p.x;py=s.stockH-s.margin-p.y-p.h;}else{px=s.stockW-s.margin-p.x-p.w;py=s.margin+p.y;}}
+    if(viewSide==='back'){
+      const trimX=s.margin+p.x+p.bleed, trimY=s.margin+p.y+p.bleed;
+      if(s.flipAxis==='horizontal'){const backTrimY=s.stockH-trimY-p.trimH;px=trimX-p.bleed;py=backTrimY-p.bleed;}
+      else{const backTrimX=s.stockW-trimX-p.trimW;px=backTrimX-p.bleed;py=trimY-p.bleed;}
+    }
     else{px=s.margin+p.x;py=s.margin+p.y;}
     const x=px*scale,y=py*scale,w=p.w*scale,h=p.h*scale;
     ctx.fillStyle=viewSide==='back'?'#fef2f2':'#eff6ff';ctx.fillRect(x,y,w,h);
@@ -1139,16 +1143,22 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
       const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
       drawItem(page,c,x,y,p,Wp,Hp);
     }else{
-      const fX=(s.margin+p.x)*PTS,fY=Hp-(s.margin+p.y+p.h)*PTS;
+      // Back side: mirror using trim position (p.x + p.bleed), not bleed-offset position
+      const trimX=(s.margin+p.x+p.bleed)*PTS, trimY=(s.margin+p.y+p.bleed)*PTS;
+      const trimW=p.trimW*PTS, trimH=p.trimH*PTS;
       let bx,by;
       if(s.flipAxis==='horizontal'){
-        bx=fX;by=Hp-fY-h;
+        // Top/Bottom flip: trim X stays, trim Y mirrors
+        const backTrimY=Hp-trimY-trimH;
+        bx=trimX-p.bleed*PTS; by=backTrimY-p.bleed*PTS;
         const cx=bx+w/2,cy=by+h/2;
         page.pushOperators(PDFLib.pushGraphicsState(),PDFLib.concatTransformationMatrix(1,0,0,1,cx,cy),PDFLib.concatTransformationMatrix(-1,0,0,-1,0,0),PDFLib.concatTransformationMatrix(1,0,0,1,-cx,-cy));
         drawItem(page,c,bx,by,p,Wp,Hp);
         page.pushOperators(PDFLib.popGraphicsState());
       }else{
-        bx=Wp-fX-w;by=fY;
+        // Left/Right flip: trim X mirrors, trim Y stays
+        const backTrimX=Wp-trimX-trimW;
+        bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
         drawItem(page,c,bx,by,p,Wp,Hp);
       }
     }
@@ -1157,23 +1167,20 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
 
 function drawItem(page,c,x,y,p,Wp,Hp){
   const w=p.w*PTS,h=p.h*PTS;
+  // Clip to bleed box so adjacent items' overlapping bleeds don't paint over each other
+  page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
   if(p.rotated){
-    // The source page is physW x physH (not rotated). We need to draw it rotated 90° CW
-    // into a w x h box where w=physH*72, h=physW*72.
-    // Rotate 90° CW around the placement center: translate to position, rotate, draw at native dims
-    const srcW=p.h*PTS, srcH=p.w*PTS; // native source dimensions (unrotated)
-    page.pushOperators(PDFLib.pushGraphicsState(),
-      // Move origin to bottom-left of placement, then rotate 90° CW
+    const srcW=p.h*PTS, srcH=p.w*PTS;
+    page.pushOperators(
       PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h),
     );
-    // Now draw at native dimensions — the rotation maps it into the rotated box
     if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:srcW,height:srcH});
     else page.drawImage(c.ref,{x:0,y:0,width:srcW,height:srcH});
-    page.pushOperators(PDFLib.popGraphicsState());
   } else {
     if(c.kind==='page') page.drawPage(c.ref,{x,y,width:w,height:h});
     else page.drawImage(c.ref,{x,y,width:w,height:h});
   }
+  page.pushOperators(PDFLib.popGraphicsState());
 }
 
 function placeMarks(page,s,Wp,Hp,font,si,sideLabel){
