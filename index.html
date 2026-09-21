@@ -163,7 +163,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <div class="form-row">
       <div class="form-group"><label>Substrate</label><input type="text" id="stockName" placeholder="e.g. Coroplast 4mm"></div>
       <div class="form-group"><label>Image DPI</label><input type="number" id="imageDPI" value="150" min="72"></div>
-      <div class="form-group"><label>Raster Bleed (in)</label><input type="number" id="rasterBleed" value="0" min="0" step="0.0625"></div>
+      <div class="form-group"><label>Bleed (in)</label><input type="number" id="rasterBleed" value="0" min="0" step="0.0625"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Master Qty</label><input type="number" id="masterQty" value="1" min="1" max="200"></div>
@@ -330,8 +330,18 @@ el('masterOrient').addEventListener('change',()=>{
 });
 el('rasterBleed').addEventListener('change',()=>{
   const bl=parseFloat(el('rasterBleed').value)||0;
-  for(const f of inputFiles){if(f.type!=='image')continue;
-    for(const p of f.pages){p.bleed=bl;p.trimW=Math.max(0.1,p.physW-2*bl);p.trimH=Math.max(0.1,p.physH-2*bl);}
+  for(const f of inputFiles){
+    for(const p of f.pages){
+      // Save original source dimensions on first override
+      if(p.srcW===undefined){p.srcW=p.physW;p.srcH=p.physH;p.srcBleed=p.bleed;}
+      if(f.type==='image'){
+        p.bleed=bl;p.trimW=Math.max(0.1,p.srcW-2*bl);p.trimH=Math.max(0.1,p.srcH-2*bl);
+        p.physW=p.srcW;p.physH=p.srcH;
+      } else {
+        // PDF: trim stays fixed (from TrimBox), bleed changes
+        p.bleed=bl;p.physW=p.trimW+2*bl;p.physH=p.trimH+2*bl;
+      }
+    }
   }
   invalidateLayout();renderFileList();
 });
@@ -418,9 +428,14 @@ async function parsePDF(bytes,name){
     let physW,physH,trimW,trimH,bleed;
     if(hasTrim){trimW=tb.width/PTS;trimH=tb.height/PTS;physW=mb.width/PTS;physH=mb.height/PTS;bleed=Math.max(0,Math.min((physW-trimW)/2,(physH-trimH)/2));}
     else{physW=mb.width/PTS;physH=mb.height/PTS;trimW=physW;trimH=physH;bleed=0;}
+    // If user has set a bleed override, apply it (keep trim, adjust physW/physH)
+    const userBl=s.rasterBleed;
+    const srcW=physW, srcH=physH, srcBleed=bleed;
+    if(userBl>0&&hasTrim){bleed=userBl;physW=trimW+2*userBl;physH=trimH+2*userBl;}
     // Extract die line paths from the PDF
     const diePaths = extractDiePaths(bytes, doc, i, mb.width, mb.height);
     entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,
+      srcW,srcH,srcBleed,
       qty:s.masterQty,qtyOverride:false,orient:s.masterOrient,orientOverride:false,
       side:'face',backRef:null});
   }
@@ -766,6 +781,7 @@ function collectPieces(forceRotated){
     for(let q=0;q<p.qty;q++)items.push({
       fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:p.bleed,rotated:ori.rotated,
       canFlip:isAuto, physW:p.physW, physH:p.physH, trimWOrig:p.trimW, trimHOrig:p.trimH,
+      srcW:p.srcW||p.physW, srcH:p.srcH||p.physH, srcBleed:p.srcBleed!==undefined?p.srcBleed:p.bleed,
       diePaths:p.diePaths||null,
       label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')+(p.qty>1?` #${q+1}`:''),
     });
@@ -1123,7 +1139,24 @@ async function exportPrintPDF(){
     for(let si=0;si<sheets.length;si++){
       const sheet=sheets[si];
       const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
-      if(s.doubleSided){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back');}
+      if(s.doubleSided){
+        // For "same" mode, check if layout is symmetric across flip axis — if so, skip back page
+        let needsBack=true;
+        if(s.dblMode==='same'){
+          const pl=sheet.placements, cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
+          const allSameContent=pl.every(p=>p.fileId===pl[0].fileId&&p.pageIndex===pl[0].pageIndex);
+          if(allSameContent){
+            // All same content — check positional symmetry across flip axis
+            const tol=0.1;
+            if(s.flipAxis==='horizontal'){
+              needsBack=!pl.every(p=>{const trimY=p.y+p.bleed;const mirrorY=cH-trimY-p.trimH;return pl.some(q=>Math.abs((q.y+q.bleed)-mirrorY)<tol&&Math.abs((q.x+q.bleed)-(p.x+p.bleed))<tol);});
+            }else{
+              needsBack=!pl.every(p=>{const trimX=p.x+p.bleed;const mirrorX=cW-trimX-p.trimW;return pl.some(q=>Math.abs((q.x+q.bleed)-mirrorX)<tol&&Math.abs((q.y+q.bleed)-(p.y+p.bleed))<tol);});
+            }
+          }
+        }
+        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back');}
+      }
     }
     download(await outDoc.save(),fileName(s)+'_Print.pdf');
   }catch(err){alert('Export failed: '+err.message);console.error(err);}
@@ -1143,7 +1176,7 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
       const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
       drawItem(page,c,x,y,p,Wp,Hp);
     }else{
-      // Back side: mirror using trim position (p.x + p.bleed), not bleed-offset position
+      // Back side: reposition for flip (no content mirroring — physical sheet flip handles that)
       const trimX=(s.margin+p.x+p.bleed)*PTS, trimY=(s.margin+p.y+p.bleed)*PTS;
       const trimW=p.trimW*PTS, trimH=p.trimH*PTS;
       let bx,by;
@@ -1151,34 +1184,36 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
         // Top/Bottom flip: trim X stays, trim Y mirrors
         const backTrimY=Hp-trimY-trimH;
         bx=trimX-p.bleed*PTS; by=backTrimY-p.bleed*PTS;
-        const cx=bx+w/2,cy=by+h/2;
-        page.pushOperators(PDFLib.pushGraphicsState(),PDFLib.concatTransformationMatrix(1,0,0,1,cx,cy),PDFLib.concatTransformationMatrix(-1,0,0,-1,0,0),PDFLib.concatTransformationMatrix(1,0,0,1,-cx,-cy));
-        drawItem(page,c,bx,by,p,Wp,Hp);
-        page.pushOperators(PDFLib.popGraphicsState());
       }else{
         // Left/Right flip: trim X mirrors, trim Y stays
         const backTrimX=Wp-trimX-trimW;
         bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
-        drawItem(page,c,bx,by,p,Wp,Hp);
       }
+      drawItem(page,c,bx,by,p,Wp,Hp);
     }
   }
 }
 
 function drawItem(page,c,x,y,p,Wp,Hp){
   const w=p.w*PTS,h=p.h*PTS;
-  // Clip to bleed box so adjacent items' overlapping bleeds don't paint over each other
+  // Clip to the user's bleed box (trim + user bleed on each side)
   page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
+  // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
+  const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
+  // Offset to align trim: source bleed may differ from user bleed
+  const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
+  const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
   if(p.rotated){
-    const srcW=p.h*PTS, srcH=p.w*PTS;
+    const rSrcW=(p.srcH||p.h)*PTS, rSrcH=(p.srcW||p.w)*PTS;
+    const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
     page.pushOperators(
-      PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h),
+      PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy),
     );
-    if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:srcW,height:srcH});
-    else page.drawImage(c.ref,{x:0,y:0,width:srcW,height:srcH});
+    if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+    else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
   } else {
-    if(c.kind==='page') page.drawPage(c.ref,{x,y,width:w,height:h});
-    else page.drawImage(c.ref,{x,y,width:w,height:h});
+    if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+    else page.drawImage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
   }
   page.pushOperators(PDFLib.popGraphicsState());
 }
