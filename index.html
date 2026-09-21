@@ -328,7 +328,9 @@ el('masterOrient').addEventListener('change',()=>{
   for(const f of inputFiles)for(const p of f.pages)if(!p.orientOverride)p.orient=mo;
   invalidateLayout();renderFileList();
 });
-el('rasterBleed').addEventListener('change',()=>{
+el('rasterBleed').addEventListener('change',applyBleedOverride);
+el('rasterBleed').addEventListener('input',applyBleedOverride);
+function applyBleedOverride(){
   const bl=parseFloat(el('rasterBleed').value)||0;
   for(const f of inputFiles){
     for(const p of f.pages){
@@ -344,7 +346,7 @@ el('rasterBleed').addEventListener('change',()=>{
     }
   }
   invalidateLayout();renderFileList();
-});
+}
 
 /* === COMMON BACK === */
 const cbDrop=el('commonBackDrop'),cbInput=el('commonBackInput');
@@ -936,6 +938,8 @@ function centerPlacements(pl,bW,bH){
 
 function arrangeLayout(){
   const s=S(),cW=s.stockW-2*s.margin,cH=s.stockH-2*s.margin;
+  // Ensure bleed override is applied before packing
+  applyBleedOverride();
 
   // Try both sheet orientations (WxH and HxW) and pick best yield
   function sheetCapacity(aW,aH){
