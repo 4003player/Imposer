@@ -146,6 +146,18 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 }
 .info-box b { color: #0071e3; }
 .note { font-size: 11px; color: #86868b; text-align: center; margin-top: 8px; }
+
+.layout-choice {
+  border: 2px solid #d2d2d7; border-radius: 10px; padding: 10px;
+  cursor: pointer; transition: all 0.2s; background: #fafafa; text-align: center;
+  min-width: 180px; flex: 1;
+}
+.layout-choice:hover { border-color: #0071e3; background: #f0f7ff; }
+.layout-choice.selected { border-color: #0071e3; background: #e8f4ff; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
+.layout-choice canvas { max-width: 100%; border-radius: 6px; }
+.layout-choice .lc-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 4px; }
+.layout-choice .lc-info { font-size: 11px; color: #86868b; }
+.layout-choice .lc-best { display: inline-block; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -231,6 +243,13 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   <!-- LAYOUT -->
   <div id="layoutSection" style="display:none">
     <button class="btn btn-primary" id="arrangeBtn">Arrange Layout</button>
+    <div id="layoutChoices" style="display:none;margin-top:12px">
+      <div class="card">
+        <h2>Choose Layout</h2>
+        <p style="font-size:12px;color:#86868b;margin-bottom:10px">Click a layout to use it</p>
+        <div id="choiceGrid" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+      </div>
+    </div>
     <div class="preview-box" id="previewBox" style="display:none">
       <div class="sheet-nav" id="sheetNav"></div>
       <canvas id="preview"></canvas>
@@ -753,6 +772,7 @@ function invalidateLayout(){
   sheets=[];viewSheet=0;viewSide='face';sheetPrintQty=1;
   el('previewBox').style.display='none';el('exportRow').style.display='none';
   el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
+  el('layoutChoices').style.display='none';
 }
 
 /* === DRAG SORT === */
@@ -936,6 +956,106 @@ function mixedShelfPack(items,bW,bH,gut){
 function packSheet(items,bW,bH,gut){
   return mixedShelfPack(items,bW,bH,gut);
 }
+
+/* === ZONE SPLIT PACKER === */
+function packShelfSimple(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>b.h-a.h||b.w-a.w);
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    if(it.w>bW+.001||it.h>bH+.001){unplaced.push(it);continue;}
+    if(cX+it.w>bW+.001){cX=0;cY+=rH+gut;rH=0;}
+    if(cY+it.h>bH+.001){unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw:it.w,ph:it.h});
+    cX+=it.w+gut;rH=Math.max(rH,it.h);
+  }
+  return{placed,unplaced};
+}
+
+function packShelfRotate(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>Math.max(b.w,b.h)-Math.max(a.w,a.h));
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    const fitsR=(w,h)=>(cX+w<=bW+.001)&&(cY+h<=bH+.001);
+    const fitsNR=(w,h)=>(w<=bW+.001)&&(cY+rH+gut+h<=bH+.001);
+    let pw,ph,rot=false;
+    if(fitsR(it.w,it.h)){pw=it.w;ph=it.h;}
+    else if(fitsR(it.h,it.w)){pw=it.h;ph=it.w;rot=true;}
+    else if(fitsNR(it.w,it.h)){cX=0;cY+=rH+gut;rH=0;pw=it.w;ph=it.h;}
+    else if(fitsNR(it.h,it.w)){cX=0;cY+=rH+gut;rH=0;pw=it.h;ph=it.w;rot=true;}
+    else{unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw,ph,rotated:rot});
+    cX+=pw+gut;rH=Math.max(rH,ph);
+  }
+  return{placed,unplaced};
+}
+
+function packZoneSplit(items,binW,binH,gut){
+  // Group by unique size
+  const groups=new Map();
+  for(const it of items){
+    const key=Math.min(it.w,it.h).toFixed(2)+'_'+Math.max(it.w,it.h).toFixed(2);
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(it);
+  }
+  const groupList=[...groups.values()];
+  if(groupList.length<2) return null;
+
+  let bestResult=null,bestCount=0,bestWaste=Infinity;
+  const perms=groupList.length<=5?permute(groupList):[groupList];
+
+  for(const perm of perms){
+    for(const[bW,bH]of[[binW,binH],[binH,binW]]){
+      const result=tryZoneOrder(perm,bW,bH,gut);
+      const waste=calcWaste(result.placed,bW,bH);
+      if(result.placed.length>bestCount||(result.placed.length===bestCount&&waste<bestWaste)){
+        bestCount=result.placed.length;bestWaste=waste;
+        bestResult={placed:result.placed,unplaced:result.unplaced,stockW:bW,stockH:bH};
+      }
+    }
+  }
+  return bestResult;
+}
+
+function tryZoneOrder(groups,binW,binH,gut){
+  let usedH=0;
+  const allPlaced=[],allUnplaced=[];
+  for(const group of groups){
+    const remainH=binH-usedH;
+    if(remainH<=0){allUnplaced.push(...group);continue;}
+    let bestPack=null,bestN=0;
+    for(const rotate of[false,true]){
+      const oriented=group.map(it=>rotate?{...it,w:it.h,h:it.w,pw:it.h,ph:it.w,rotated:true}:{...it,pw:it.w,ph:it.h,rotated:false});
+      const pack=packShelfSimple(oriented,binW,remainH,gut);
+      if(pack.placed.length>bestN){bestN=pack.placed.length;bestPack=pack;}
+    }
+    if(bestPack&&bestPack.placed.length>0){
+      let maxUsed=0;
+      for(const p of bestPack.placed){p.y+=usedH;maxUsed=Math.max(maxUsed,(p.y-usedH)+p.ph);}
+      allPlaced.push(...bestPack.placed);
+      allUnplaced.push(...bestPack.unplaced);
+      usedH+=maxUsed+gut;
+    } else allUnplaced.push(...group);
+  }
+  return{placed:allPlaced,unplaced:allUnplaced};
+}
+
+function calcWaste(placed,bW,bH){
+  let a=0;for(const p of placed)a+=(p.pw||p.w)*(p.ph||p.h);
+  return 1-a/(bW*bH);
+}
+
+function permute(arr){
+  if(arr.length<=1)return[arr];
+  const r=[];
+  for(let i=0;i<arr.length;i++){
+    const rest=[...arr.slice(0,i),...arr.slice(i+1)];
+    for(const p of permute(rest))r.push([arr[i],...p]);
+  }
+  return r;
+}
+
 function centerPlacements(pl,bW,bH){
   if(!pl.length)return;
   // Compute extent using trim positions (p.x+bleed is trim left, p.x+bleed+trimW is trim right)
@@ -947,117 +1067,178 @@ function centerPlacements(pl,bW,bH){
 
 function arrangeLayout(){
   const s=S(),cW=s.stockW-2*s.margin,cH=s.stockH-2*s.margin;
-  // Ensure bleed override is applied before packing
   applyBleedOverride();
 
-  // Try both sheet orientations (WxH and HxW) and pick best yield
-  function sheetCapacity(aW,aH){
-    // Probe with a large dummy set to find true per-sheet capacity
-    const sample=collectPieces(false);if(!sample.length)return 0;
-    const probe=[];
-    for(let i=0;i<200;i++) probe.push({...sample[i%sample.length],label:'probe'});
-    return packSheet(probe,aW,aH,s.gutter).placed.length;
-  }
-  function bestPack(aW,aH){
-    let items=collectPieces(false);
-    const hasAuto = inputFiles.some(f=>f.pages.some(p=>!p.orient||p.orient==='auto'));
-    if(hasAuto){
-      const itemsRotated=collectPieces(true);
-      const packNormal=packSheet(items,aW,aH,s.gutter);
-      const packRotated=packSheet(itemsRotated,aW,aH,s.gutter);
-      if(packRotated.placed.length>packNormal.placed.length) items=collectPieces(true);
-    }
-    return{items,pack:packSheet(items,aW,aH,s.gutter)};
-  }
-  let useW=cW,useH=cH;
-  if(Math.abs(cW-cH)>0.01){
-    const capA=sheetCapacity(cW,cH);
-    const capB=sheetCapacity(cH,cW);
-    if(capB>capA){
-      useW=cH;useH=cW;
-      // Swap the stock dimensions in the UI to reflect the chosen orientation
-      s.stockW=s.stockH+s.stockW-(s.stockH=s.stockW);
-      el('stockW').value=s.stockW;el('stockH').value=s.stockH;
+  // Collect pieces in both orientations
+  const itemsNormal=collectPieces(false);
+  const itemsRotated=collectPieces(true);
+  const hasAuto=inputFiles.some(f=>f.pages.some(p=>!p.orient||p.orient==='auto'));
+
+  if(!itemsNormal.length){el('layoutInfo').textContent='No pieces.';return;}
+
+  // Run multiple strategies, collect results
+  const candidates=[];
+
+  function tryStrategy(name,items,bW,bH){
+    const result=packSheet(items,bW,bH,s.gutter);
+    if(result.placed.length>0){
+      const pl=[...result.placed];
+      centerPlacements(pl,bW,bH);
+      const waste=calcWaste(pl,bW,bH);
+      candidates.push({name,placed:pl,unplaced:result.unplaced,stockW:bW+2*s.margin,stockH:bH+2*s.margin,contentW:bW,contentH:bH,waste,count:pl.length});
     }
   }
-  const best=bestPack(useW,useH);
-  let bestItems=best.items;
 
-  if(!bestItems.length){el('layoutInfo').textContent='No pieces.';return;}
-
-  // Find per-sheet capacity by packing a large probe
-  const capProbe=[];
-  for(let i=0;i<200;i++) capProbe.push({...bestItems[i%bestItems.length],label:'probe'});
-  const perSheet=packSheet(capProbe,useW,useH,s.gutter).placed.length;
-
-  // Build a queue of unique pages with remaining qty, sorted largest qty first
-  // Each entry: {template item (for packing), fileId, pageIndex, remaining}
-  const queueMap=new Map();
-  for(const it of bestItems){
-    const key=it.fileId+':'+it.pageIndex;
-    if(queueMap.has(key)){queueMap.get(key).remaining++;}
-    else{queueMap.set(key,{template:it,fileId:it.fileId,pageIndex:it.pageIndex,remaining:1});}
+  // Shelf packer (current) — both orientations, both item rotations
+  tryStrategy('Shelf',itemsNormal,cW,cH);
+  tryStrategy('Shelf (stock flipped)',itemsNormal,cH,cW);
+  if(hasAuto){
+    tryStrategy('Shelf (rotated)',itemsRotated,cW,cH);
+    tryStrategy('Shelf (rotated + flipped)',itemsRotated,cH,cW);
   }
-  let queue=[...queueMap.values()].sort((a,b)=>b.remaining-a.remaining);
 
-  // Fill sheets one at a time
-  sheets=[];let too=[];
-  while(queue.some(q=>q.remaining>0)){
-    // Build items for this sheet: fill cavities from highest-qty items first
-    const sheetItems=[];
-    // Re-sort by remaining qty each iteration
-    queue.sort((a,b)=>b.remaining-a.remaining);
-    for(const q of queue){
-      if(sheetItems.length>=perSheet)break;
-      const take=Math.min(q.remaining, perSheet-sheetItems.length);
-      for(let i=0;i<take;i++) sheetItems.push({...q.template});
-      q.remaining-=take;
+  // Shelf with per-piece rotation
+  for(const[bW,bH,label]of[[cW,cH,''],[cH,cW,' flipped']]){
+    const sr=packShelfRotate(itemsNormal,bW,bH,s.gutter);
+    if(sr.placed.length>0){
+      const pl=[...sr.placed];
+      centerPlacements(pl,bW,bH);
+      candidates.push({name:'Shelf+Rotate'+label,placed:pl,unplaced:sr.unplaced,stockW:bW+2*s.margin,stockH:bH+2*s.margin,contentW:bW,contentH:bH,waste:calcWaste(pl,bW,bH),count:pl.length});
     }
-    if(!sheetItems.length)break;
-    const{placed,unplaced}=packSheet(sheetItems,useW,useH,s.gutter);
-    if(!placed.length){too=sheetItems;break;}
-    centerPlacements(placed,useW,useH);
-    sheets.push({placements:placed,printQty:1});
   }
-  // Remove fulfilled entries
-  queue=queue.filter(q=>q.remaining>0);
 
-  // Deduplicate identical consecutive sheets
-  if(sheets.length>1){
-    const sheetSig = sh => sh.placements.map(p=>p.fileId+':'+p.pageIndex).sort().join(',');
-    const merged=[];
-    for(const sh of sheets){
-      const sig=sheetSig(sh);
-      if(merged.length>0&&merged[merged.length-1].sig===sig){
-        merged[merged.length-1].sheet.printQty++;
-      } else {
-        merged.push({sig,sheet:sh});
-      }
+  // Zone split
+  const zr=packZoneSplit(itemsNormal,cW,cH,s.gutter);
+  if(zr&&zr.placed.length>0){
+    const pl=[...zr.placed];
+    const zbW=zr.stockW,zbH=zr.stockH;
+    centerPlacements(pl,zbW,zbH);
+    candidates.push({name:'Zone Split',placed:pl,unplaced:zr.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
+  }
+  if(hasAuto){
+    const zr2=packZoneSplit(itemsRotated,cW,cH,s.gutter);
+    if(zr2&&zr2.placed.length>0){
+      const pl=[...zr2.placed];
+      const zbW=zr2.stockW,zbH=zr2.stockH;
+      centerPlacements(pl,zbW,zbH);
+      candidates.push({name:'Zone Split (rotated)',placed:pl,unplaced:zr2.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
     }
-    sheets=merged.map(m=>m.sheet);
   }
 
-  const pps=sheets.length>0?sheets[0].placements.length:0;
-  const totalNeeded=bestItems.length;
-  sheetPrintQty=sheets.length>0?sheets[0].printQty:1;
+  if(!candidates.length){el('layoutInfo').textContent='No pieces fit on stock.';return;}
+
+  // Sort by count desc then waste asc, deduplicate by signature
+  candidates.sort((a,b)=>b.count-a.count||(a.waste-b.waste));
+  const seen=new Set();
+  const unique=[];
+  for(const c of candidates){
+    const sig=c.placed.map(p=>Math.round(p.x*10)+','+Math.round(p.y*10)+','+Math.round((p.pw||p.w)*10)+','+Math.round((p.ph||p.h)*10)).sort().join('|');
+    if(!seen.has(sig)){seen.add(sig);unique.push(c);}
+  }
+
+  // Show top 4 as clickable choices
+  const top=unique.slice(0,4);
+  const choiceGrid=el('choiceGrid');
+  choiceGrid.innerHTML='';
+  el('layoutChoices').style.display='';
+
+  // Store candidates globally for selection
+  window._layoutCandidates=top;
+
+  top.forEach((cand,i)=>{
+    const div=document.createElement('div');
+    div.className='layout-choice'+(i===0?' selected':'');
+    div.onclick=()=>selectLayout(i);
+
+    const title=document.createElement('div');
+    title.className='lc-title';
+    title.textContent=cand.name;
+    div.appendChild(title);
+
+    // Draw thumbnail
+    const canvas=document.createElement('canvas');
+    drawChoiceThumb(canvas,cand);
+    div.appendChild(canvas);
+
+    const info=document.createElement('div');
+    info.className='lc-info';
+    const pct=((1-cand.waste)*100).toFixed(1);
+    info.textContent=`${cand.count} up · ${pct}% util · ${cand.stockW.toFixed(0)}"×${cand.stockH.toFixed(0)}"`;
+    div.appendChild(info);
+
+    if(i===0){
+      const best=document.createElement('div');
+      best.className='lc-best';best.textContent='★ BEST';
+      div.appendChild(best);
+    }
+
+    choiceGrid.appendChild(div);
+  });
+
+  // Auto-select the best one
+  selectLayout(0);
+}
+
+function drawChoiceThumb(canvas,cand){
+  const sW=cand.stockW,sH=cand.stockH,m=MARGIN;
+  const maxW=200,maxH=150;
+  const scale=Math.min(maxW/sW,maxH/sH);
+  canvas.width=Math.ceil(sW*scale);canvas.height=Math.ceil(sH*scale);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d2d2d7';ctx.strokeRect(0,0,canvas.width-1,canvas.height-1);
+
+  const colors=['#dbeafe','#fef3c7','#d1fae5','#fde8e8','#e0e7ff','#fce7f3'];
+  const sizeKeys=new Map();let ci=0;
+  for(const p of cand.placed){
+    const key=Math.min(p.w,p.h).toFixed(1)+'_'+Math.max(p.w,p.h).toFixed(1);
+    if(!sizeKeys.has(key))sizeKeys.set(key,colors[ci++%colors.length]);
+  }
+  for(const p of cand.placed){
+    const pw=p.pw||p.w,ph=p.ph||p.h;
+    const x=(m+p.x)*scale,y=(m+p.y)*scale,w=pw*scale,h=ph*scale;
+    const key=Math.min(p.w,p.h).toFixed(1)+'_'+Math.max(p.w,p.h).toFixed(1);
+    ctx.fillStyle=sizeKeys.get(key)||'#ddd';
+    ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle='#0071e3';ctx.lineWidth=0.5;
+    ctx.strokeRect(x,y,w,h);
+  }
+}
+
+function selectLayout(idx){
+  const cand=window._layoutCandidates[idx];
+  if(!cand)return;
+
+  // Highlight selected card
+  const cards=el('choiceGrid').querySelectorAll('.layout-choice');
+  cards.forEach((c,i)=>c.className='layout-choice'+(i===idx?' selected':''));
+
+  const s=S();
+  // Update stock dims to match chosen layout
+  s.stockW=cand.stockW;s.stockH=cand.stockH;
+  el('stockW').value=cand.stockW;el('stockH').value=cand.stockH;
+
+  // Build sheets from the chosen placement
+  const totalNeeded=cand.placed.length + (cand.unplaced?cand.unplaced.length:0);
+  const perSheet=cand.count;
+
+  // For now, just one sheet with the chosen layout
+  sheets=[{placements:cand.placed,printQty:Math.max(1,Math.ceil(totalNeeded/perSheet))}];
+
+  // Deduplicate if multiple identical sheets would be needed
+  sheetPrintQty=sheets[0].printQty;
+
   viewSheet=0;viewSide='face';drawPreview();
-  let info=`${pps} up per sheet`;if(s.doubleSided)info+=' | Double-sided';if(too.length)info+=` | ${too.length} too large!`;
-  el('layoutInfo').textContent=info;
+
+  el('layoutInfo').textContent=`${perSheet} up per sheet`+(s.doubleSided?' | Double-sided':'');
   const cd=el('sheetCalc');cd.style.display='';
-  if(sheets.length===1){
-    const tp=pps*sheets[0].printQty;
-    cd.innerHTML=`<b>${pps}</b> per sheet × <b>Print ${sheets[0].printQty} times</b> = <b>${tp}</b> total`+(tp>totalNeeded?` (${tp-totalNeeded} extra)`:'');
-  } else {
-    const parts=[];let grandTotal=0;
-    for(let i=0;i<sheets.length;i++){const sh=sheets[i];const t=sh.placements.length*sh.printQty;grandTotal+=t;parts.push(`Sheet ${i+1}: ${sh.placements.length} up × ${sh.printQty}`);}
-    cd.innerHTML=parts.join(' &nbsp;|&nbsp; ')+` = <b>${grandTotal}</b> total`+(grandTotal>totalNeeded?` (${grandTotal-totalNeeded} extra)`:'');
-  }
-  el('previewBox').style.display='';el('exportRow').style.display=pps>0?'flex':'none';
-  // Show OPW button if any face page has a white plate
+  const tp=perSheet*sheetPrintQty;
+  cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print ${sheetPrintQty} times</b> = <b>${tp}</b> total`+(tp>totalNeeded?` (${tp-totalNeeded} extra)`:'');
+
+  el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';
   const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
   el('opwBtn').style.display=hasOPW?'':'none';
-  // Hide Cut button if ALL placed pieces have extracted die paths (die lines are in the print file)
-  const allHaveDie=sheets.length>0 && sheets.every(sh=>sh.placements.every(p=>p.diePaths && p.diePaths.paths && p.diePaths.paths.length>0));
+  const allHaveDie=sheets.length>0&&sheets.every(sh=>sh.placements.every(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
   el('cutBtn').style.display=allHaveDie?'none':'';
 }
 
