@@ -645,22 +645,77 @@ function extractDiePaths(pdfBytes, doc, pageIdx, pageW, pageH){
 
 async function parseTiff(bytes,name){
   const dec=await decodeTiff(bytes.buffer);
-  const s=S(),physW=dec.w/s.dpi,physH=dec.h/s.dpi,bl=s.rasterBleed;
+  const s=S();
+  // Try to read DPI from TIFF metadata
+  const ifds=UTIF.decode(bytes.buffer);
+  let fileDPI = null;
+  if(ifds[0]){
+    const xres=ifds[0].t282; // XResolution tag
+    if(xres && xres.length) fileDPI=xres[0];
+  }
+  const dpi=fileDPI||s.dpi;
+  const physW=dec.w/dpi,physH=dec.h/dpi,bl=s.rasterBleed;
   inputFiles.push({id:++fileIdSeq,name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
     imageW:dec.w,imageH:dec.h,
     pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
-      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi:s.dpi,hasTrim:false,
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
       orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+/* Extract DPI from JPEG/PNG binary data */
+function extractImageDPI(bytes){
+  // JPEG: look for JFIF APP0 marker (FF E0) with density
+  if(bytes[0]===0xFF && bytes[1]===0xD8){
+    // Scan for APP0 JFIF
+    let i=2;
+    while(i<bytes.length-10){
+      if(bytes[i]===0xFF){
+        const marker=bytes[i+1];
+        const len=(bytes[i+2]<<8)|bytes[i+3];
+        if(marker===0xE0){ // APP0 JFIF
+          // Check for JFIF signature
+          if(bytes[i+4]===0x4A&&bytes[i+5]===0x46&&bytes[i+6]===0x49&&bytes[i+7]===0x46){
+            const units=bytes[i+11];
+            const xDens=(bytes[i+12]<<8)|bytes[i+13];
+            const yDens=(bytes[i+14]<<8)|bytes[i+15];
+            if(units===1 && xDens>0) return xDens; // dots per inch
+            if(units===2 && xDens>0) return Math.round(xDens*2.54); // dots per cm -> dpi
+          }
+        }
+        i+=2+len;
+      } else i++;
+    }
+  }
+  // PNG: look for pHYs chunk
+  if(bytes[0]===0x89 && bytes[1]===0x50){
+    let i=8;
+    while(i<bytes.length-12){
+      const chunkLen=(bytes[i]<<24)|(bytes[i+1]<<16)|(bytes[i+2]<<8)|bytes[i+3];
+      const type=String.fromCharCode(bytes[i+4],bytes[i+5],bytes[i+6],bytes[i+7]);
+      if(type==='pHYs'){
+        const ppuX=(bytes[i+8]<<24)|(bytes[i+9]<<16)|(bytes[i+10]<<8)|bytes[i+11];
+        const ppuY=(bytes[i+12]<<24)|(bytes[i+13]<<16)|(bytes[i+14]<<8)|bytes[i+15];
+        const unit=bytes[i+16];
+        if(unit===1 && ppuX>0) return Math.round(ppuX/39.3701); // meters -> inches
+      }
+      if(type==='IDAT'||type==='IEND') break;
+      i+=12+chunkLen;
+    }
+  }
+  return null;
 }
 
 async function parseRaster(bytes,name,mimeType){
   const blob=new Blob([bytes],{type:mimeType}),url=URL.createObjectURL(blob);
   const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
-  const s=S(),physW=img.naturalWidth/s.dpi,physH=img.naturalHeight/s.dpi,bl=s.rasterBleed;
+  const s=S();
+  const fileDPI=extractImageDPI(bytes);
+  const dpi=fileDPI||s.dpi;
+  const physW=img.naturalWidth/dpi,physH=img.naturalHeight/dpi,bl=s.rasterBleed;
   inputFiles.push({id:++fileIdSeq,name,type:'image',bytes,mimeType,
     imageW:img.naturalWidth,imageH:img.naturalHeight,
     pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
-      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi:s.dpi,hasTrim:false,
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
       orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
 }
 
@@ -719,6 +774,7 @@ function renderFileList(){
     html+=`<span class="drag-handle">&#9776;</span>`;
     html+=`<span class="name">${esc(f.name)}${pgL}</span>`;
     html+=`<span class="info">${p.physW.toFixed(1)}" x ${p.physH.toFixed(1)}"</span>`;
+    if(f.type==='image'&&p.dpi) html+=` <span class="info">${p.dpi} DPI</span>`;
     if(p.hasTrim)html+=` <span class="tag tag-detect">Bleed ${fmtNum(p.bleed)}"</span>`;
     else if(f.type==='image'&&p.bleed>0)html+=` <span class="info">Bleed ${fmtNum(p.bleed)}"</span>`;
     html+=` <span class="info">Trim ${p.trimW.toFixed(1)}" x ${p.trimH.toFixed(1)}"</span>`;
