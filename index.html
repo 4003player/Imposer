@@ -662,54 +662,254 @@ async function parseTiff(bytes,name){
       orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
 }
 
-/* Extract DPI from JPEG/PNG binary data */
-function extractImageDPI(bytes){
-  // JPEG: look for JFIF APP0 marker (FF E0) with density
-  if(bytes[0]===0xFF && bytes[1]===0xD8){
-    // Scan for APP0 JFIF
-    let i=2;
-    while(i<bytes.length-10){
-      if(bytes[i]===0xFF){
-        const marker=bytes[i+1];
-        const len=(bytes[i+2]<<8)|bytes[i+3];
-        if(marker===0xE0){ // APP0 JFIF
-          // Check for JFIF signature
-          if(bytes[i+4]===0x4A&&bytes[i+5]===0x46&&bytes[i+6]===0x49&&bytes[i+7]===0x46){
-            const units=bytes[i+11];
-            const xDens=(bytes[i+12]<<8)|bytes[i+13];
-            const yDens=(bytes[i+14]<<8)|bytes[i+15];
-            if(units===1 && xDens>0) return xDens; // dots per inch
-            if(units===2 && xDens>0) return Math.round(xDens*2.54); // dots per cm -> dpi
-          }
-        }
-        i+=2+len;
-      } else i++;
-    }
+/* === DPI DETECTION (from Proofmaker) === */
+function detectDpiFromBytes(uint8, filename) {
+  var dpi = null;
+  var lower = filename.toLowerCase();
+
+  // JPEG: try JFIF APP0, EXIF APP1, then Photoshop APP13 (8BIM ResolutionInfo)
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+    dpi = parseJfifDpi(uint8) || parseExifDpi(uint8) || parsePhotoshopDpi(uint8);
   }
   // PNG: look for pHYs chunk
-  if(bytes[0]===0x89 && bytes[1]===0x50){
-    let i=8;
-    while(i<bytes.length-12){
-      const chunkLen=(bytes[i]<<24)|(bytes[i+1]<<16)|(bytes[i+2]<<8)|bytes[i+3];
-      const type=String.fromCharCode(bytes[i+4],bytes[i+5],bytes[i+6],bytes[i+7]);
-      if(type==='pHYs'){
-        const ppuX=(bytes[i+8]<<24)|(bytes[i+9]<<16)|(bytes[i+10]<<8)|bytes[i+11];
-        const ppuY=(bytes[i+12]<<24)|(bytes[i+13]<<16)|(bytes[i+14]<<8)|bytes[i+15];
-        const unit=bytes[i+16];
-        if(unit===1 && ppuX>0) return Math.round(ppuX/39.3701); // meters -> inches
-      }
-      if(type==='IDAT'||type==='IEND') break;
-      i+=12+chunkLen;
-    }
+  else if (lower.endsWith('.png')) {
+    dpi = parsePngDpi(uint8);
+  }
+  // TIFF: IFD tags
+  else if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
+    var info = parseTiffIfdFull(uint8, 0);
+    if (info) dpi = info.dpi;
+  }
+  return dpi;
+}
+
+// Scan past JPEG fill bytes (0xFF padding) and marker-alignment junk.
+// Returns the index of the next valid 0xFF marker byte, or -1.
+function jpegNextMarker(d, start, limit) {
+  var i = start;
+  // Skip fill bytes (consecutive 0xFF)
+  while (i < limit && d[i] === 0xFF) i++;
+  // Back up one — we want to land ON the 0xFF that precedes the marker byte
+  if (i > start) i--;
+  // If we're not on 0xFF, scan forward to find one
+  while (i < limit && d[i] !== 0xFF) i++;
+  if (i >= limit) return -1;
+  // Skip any additional fill 0xFF bytes
+  while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+  return (i < limit - 1 && d[i] === 0xFF) ? i : -1;
+}
+
+function parseJfifDpi(d) {
+  // JFIF APP0: FF D8 FF E0 [len16] "JFIF\0" version densityUnit Xdensity Ydensity
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    // Stop at SOS (start of scan) — no more metadata after this
+    if (marker === 0xDA) break;
+    // Skip markers that have no length field (RST0-7, SOI, EOI, TEM)
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; } // invalid length — skip marker and retry
+    if (marker === 0xE0 && segLen >= 14) { // APP0 with enough room for JFIF
+      if (i + 13 < limit &&
+          d[i+4]===0x4A && d[i+5]===0x46 && d[i+6]===0x49 && d[i+7]===0x46 && d[i+8]===0x00) {
+        var unit = d[i + 11];
+        var xd = (d[i + 12] << 8) | d[i + 13];
+        if (unit === 1 && xd > 0) return xd; // dots per inch
+        if (unit === 2 && xd > 0) return Math.round(xd * 2.54); // dots per cm → dpi
+                // unit 0 = "aspect ratio only" but many JPEG encoders still store real DPI;
+                // if value looks like a typical print DPI (72–1200), use it as best-guess
+                if (unit === 0 && xd >= 72 && xd <= 1200) return xd;
+              }
+            }
+    i += 2 + segLen;
   }
   return null;
+}
+
+function parseExifDpi(d) {
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break;
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xE1) { // APP1 EXIF
+      if (i + 10 < limit &&
+          d[i+4]===0x45 && d[i+5]===0x78 && d[i+6]===0x69 && d[i+7]===0x66 &&
+          d[i+8]===0x00 && d[i+9]===0x00) {
+        var tiffStart = i + 10; // after marker(2)+len(2)+Exif\0\0(6)
+        var info = parseTiffIfdFull(d, tiffStart);
+        if (info && info.dpi) return info.dpi;
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePhotoshopDpi(d) {
+  // Photoshop APP13 (FFED): look for 8BIM resource 0x03ED (ResolutionInfo)
+  // Format: fixed-point 16.16 hRes, uint16 hResUnit (1=ppi, 2=ppcm), ...
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 1048576); // scan up to 1 MB (large ICC profiles push APP13 far out)
+  var i = 2;
+  while (i >= 0 && i < limit - 10) {
+    // Find next marker
+    if (d[i] !== 0xFF) { i++; continue; }
+    while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+    if (i >= limit - 4) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break; // SOS
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xED) { // APP13
+      // Check for "Photoshop 3.0 " header
+      var segEnd = Math.min(i + 2 + segLen, limit);
+      var j = i + 4;
+      // Walk 8BIM resource blocks
+      while (j < segEnd - 12) {
+        if (d[j] === 0x38 && d[j+1] === 0x42 && d[j+2] === 0x49 && d[j+3] === 0x4D) { // "8BIM"
+          var resId = (d[j + 4] << 8) | d[j + 5];
+          // Skip pascal string (padded to even length)
+          var pLen = d[j + 6];
+          if (pLen % 2 === 0) pLen++;
+          var dataOff = j + 7 + pLen;
+          if (dataOff + 4 > segEnd) break;
+          var dataLen = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+          dataOff += 4;
+          if (resId === 0x03ED && dataLen >= 8 && dataOff + 8 <= segEnd) {
+            // ResolutionInfo: 4 bytes fixed-point 16.16 hRes, 2 bytes hResUnit
+            var hResFixed = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+            var hRes = hResFixed / 65536;
+            var hResUnit = (d[dataOff + 4] << 8) | d[dataOff + 5]; // 1=ppi, 2=ppcm
+            if (hRes > 0) {
+              return hResUnit === 2 ? Math.round(hRes * 2.54) : Math.round(hRes);
+            }
+          }
+          j = dataOff + dataLen;
+          if (dataLen % 2 !== 0) j++; // pad to even
+        } else {
+          j++;
+        }
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePngDpi(d) {
+  // PNG chunks: after 8-byte signature, each chunk is [len32][type4][data][crc32]
+  if (d.length < 20 || d[0]!==0x89 || d[1]!==0x50) return null;
+  var i = 8;
+  while (i < d.length - 12) {
+    var len = (d[i]<<24) | (d[i+1]<<16) | (d[i+2]<<8) | d[i+3];
+    if (len < 0 || len > d.length) break; // sanity
+    var type = String.fromCharCode(d[i+4], d[i+5], d[i+6], d[i+7]);
+    if (type === 'IDAT' || type === 'IEND') break; // past metadata
+    if (type === 'pHYs' && len === 9) {
+      var ppuX = (d[i+8]<<24) | (d[i+9]<<16) | (d[i+10]<<8) | d[i+11];
+      var unit = d[i+16];
+      if (unit === 1 && ppuX > 0) return Math.round(ppuX / 39.3701); // meters → inches
+      return null; // unit 0 = unknown
+    }
+    i += 12 + len;
+  }
+  return null;
+}
+
+// Combined TIFF IFD parser — returns { dpi, width, height } or null.
+// Works for both standalone TIFF files (base=0) and JPEG EXIF (base=APP1 offset).
+function parseTiffIfdFull(d, base) {
+  if (base + 8 > d.length) return null;
+  var le = (d[base]===0x49 && d[base+1]===0x49); // II = little-endian
+  var be = (d[base]===0x4D && d[base+1]===0x4D); // MM = big-endian
+  if (!le && !be) return null;
+
+  function u16(off) {
+    off += base;
+    if (off+2 > d.length) return 0;
+    return le ? (d[off] | (d[off+1]<<8)) : ((d[off]<<8) | d[off+1]);
+  }
+  function u32(off) {
+    off += base;
+    if (off+4 > d.length) return 0;
+    return le ? ((d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24)) >>> 0)
+              : (((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]) >>> 0);
+  }
+
+  var magic = u16(2);
+  if (magic !== 42) return null; // not classic TIFF
+
+  var ifdOff = u32(4);
+  if (ifdOff === 0 || base + ifdOff + 2 > d.length) return null;
+  var nEntries = u16(ifdOff);
+  if (nEntries === 0 || nEntries > 500) return null; // sanity
+  var resUnit = 2; // default = inches
+  var xRes = null;
+  var imgWidth = null, imgHeight = null;
+
+  for (var e = 0; e < nEntries; e++) {
+    var entryOff = ifdOff + 2 + e * 12;
+    if (base + entryOff + 12 > d.length) break;
+    var tag = u16(entryOff);
+    var type = u16(entryOff + 2);
+    var count = u32(entryOff + 4);
+    var valOff = u32(entryOff + 8);
+
+    // ImageWidth (tag 0x0100)
+    if (tag === 0x0100) {
+      imgWidth = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ImageLength / height (tag 0x0101)
+    if (tag === 0x0101) {
+      imgHeight = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ResolutionUnit (tag 0x0128)
+    if (tag === 0x0128) {
+      resUnit = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // XResolution (tag 0x011A) — RATIONAL, SHORT, or LONG
+    if (tag === 0x011A) {
+      if (type === 5) { // RATIONAL: num/den stored at valOff
+        if (base + valOff + 8 <= d.length) {
+          var num = u32(valOff);
+          var den = u32(valOff + 4);
+          if (den > 0) xRes = num / den;
+        }
+      } else if (type === 3) { // SHORT
+        xRes = u16(entryOff + 8);
+      } else if (type === 4) { // LONG
+        xRes = valOff;
+      }
+    }
+  }
+
+  var dpi = null;
+  if (xRes && xRes > 0) {
+    dpi = (resUnit === 3) ? Math.round(xRes * 2.54) : Math.round(xRes);
+  }
+  return { dpi: dpi, width: imgWidth, height: imgHeight };
 }
 
 async function parseRaster(bytes,name,mimeType){
   const blob=new Blob([bytes],{type:mimeType}),url=URL.createObjectURL(blob);
   const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
   const s=S();
-  const fileDPI=extractImageDPI(bytes);
+  const fileDPI=detectDpiFromBytes(bytes,name);
   const dpi=fileDPI||s.dpi;
   const physW=img.naturalWidth/dpi,physH=img.naturalHeight/dpi,bl=s.rasterBleed;
   inputFiles.push({id:++fileIdSeq,name,type:'image',bytes,mimeType,
