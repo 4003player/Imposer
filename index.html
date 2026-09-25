@@ -1773,11 +1773,13 @@ function exportCutPDF(){
       if(p.diePaths){
         // Use extracted die line paths, translated to imposed position
         // Source coords are in the page's own coordinate system (bottom-left origin)
-        // We need to scale and translate to the imposed position
+        // When the piece is rotated, rotate die path coords to match
         const srcW=p.diePaths.pageW, srcH=p.diePaths.pageH;
-        const scaleX=pw/srcW, scaleY=ph/srcH;
+        let effSrcW=srcW, effSrcH=srcH;
+        if(p.rotated){ effSrcW=srcH; effSrcH=srcW; }
+        const scaleX=pw/effSrcW, scaleY=ph/effSrcH;
         for(const path of p.diePaths.paths){
-          const translated=translateDiePath(path, posX, posY, scaleX, scaleY, srcH, ph);
+          const translated=translateDiePath(path, posX, posY, scaleX, scaleY, effSrcH, ph, p.rotated, srcW);
           cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY)});
         }
       } else {
@@ -1793,34 +1795,48 @@ function exportCutPDF(){
   download(buildCutPDF(sd,Wp,Hp),fileName(s)+'_Cut.pdf');
 }
 
-function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH){
+function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, rotated, origSrcW){
   // Transform path ops from source page coords to imposed position
   // Source: bottom-left origin, coords relative to page
   // Destination: bottom-left origin, offset by (offsetX, offsetY)
-  // Apply cm transforms if present, then scale and translate
+  // When rotated: apply 90° CW rotation (x,y) → (y, origSrcW - x) before scaling
   const ops = [];
   let cmTx=0, cmTy=0; // current transform offset from cm operators
   
+  function tx(x,y){
+    let rx=x+cmTx, ry=y+cmTy;
+    if(rotated){
+      // 90° CW rotation in source coords: new_x = old_y, new_y = origSrcW - old_x
+      const tmp=rx; rx=ry; ry=origSrcW-tmp;
+    }
+    return { x: rx*scaleX+offsetX, y: ry*scaleY+offsetY };
+  }
+  
   for(const op of path.ops){
     if(op.op==='cm'){
-      // Simple translation transform: a=1,b=0,c=0,d=1,e=tx,f=ty
       cmTx=op.e; cmTy=op.f;
       continue;
     }
     if(op.op==='m'){
-      ops.push({op:'m', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY});
+      const t=tx(op.x,op.y);
+      ops.push({op:'m', x:t.x, y:t.y});
     } else if(op.op==='l'){
-      ops.push({op:'l', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY});
+      const t=tx(op.x,op.y);
+      ops.push({op:'l', x:t.x, y:t.y});
     } else if(op.op==='c'){
-      ops.push({op:'c',
-        x1:(op.x1+cmTx)*scaleX+offsetX, y1:(op.y1+cmTy)*scaleY+offsetY,
-        x2:(op.x2+cmTx)*scaleX+offsetX, y2:(op.y2+cmTy)*scaleY+offsetY,
-        x3:(op.x3+cmTx)*scaleX+offsetX, y3:(op.y3+cmTy)*scaleY+offsetY});
+      const t1=tx(op.x1,op.y1), t2=tx(op.x2,op.y2), t3=tx(op.x3,op.y3);
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
     } else if(op.op==='h'){
       ops.push({op:'h'});
     } else if(op.op==='re'){
-      ops.push({op:'re', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY,
-        w:op.w*scaleX, h:op.h*scaleY});
+      if(rotated){
+        // Rectangle: rotate all 4 corners and emit as m/l/h
+        const p1=tx(op.x,op.y), p2=tx(op.x+op.w,op.y), p3=tx(op.x+op.w,op.y+op.h), p4=tx(op.x,op.y+op.h);
+        ops.push({op:'m',x:p1.x,y:p1.y},{op:'l',x:p2.x,y:p2.y},{op:'l',x:p3.x,y:p3.y},{op:'l',x:p4.x,y:p4.y},{op:'h'});
+      } else {
+        ops.push({op:'re', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY,
+          w:op.w*scaleX, h:op.h*scaleY});
+      }
     }
   }
   return {ops};
