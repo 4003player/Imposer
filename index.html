@@ -1474,22 +1474,33 @@ function selectLayout(idx){
   s.stockW=cand.stockW;s.stockH=cand.stockH;
   el('stockW').value=cand.stockW;el('stockH').value=cand.stockH;
 
-  // Build sheets from the chosen placement
+  // Build sheets — pack overflow onto additional sheets
   const totalNeeded=cand.placed.length + (cand.unplaced?cand.unplaced.length:0);
   const perSheet=cand.count;
+  const contentW=cand.contentW, contentH=cand.contentH;
 
-  // For now, just one sheet with the chosen layout
-  sheets=[{placements:cand.placed,printQty:Math.max(1,Math.ceil(totalNeeded/perSheet))}];
-
-  // Deduplicate if multiple identical sheets would be needed
-  sheetPrintQty=sheets[0].printQty;
+  sheets=[{placements:cand.placed,printQty:1}];
+  let unplacedPool=cand.unplaced?[...cand.unplaced]:[];
+  while(unplacedPool.length>0){
+    const result=packSheet(unplacedPool,contentW,contentH,s.gutter);
+    if(result.placed.length===0)break; // nothing fits, avoid infinite loop
+    const pl=[...result.placed];
+    centerPlacements(pl,contentW,contentH);
+    sheets.push({placements:pl,printQty:1});
+    unplacedPool=result.unplaced;
+  }
+  sheetPrintQty=1;
 
   viewSheet=0;viewSide='face';drawPreview();
 
-  el('layoutInfo').textContent=`${perSheet} up per sheet`+(s.doubleSided?' | Double-sided':'');
+  const totalPlaced=sheets.reduce((sum,sh)=>sum+sh.placements.length,0);
+  el('layoutInfo').textContent=`${perSheet} up per sheet · ${sheets.length} sheet${sheets.length>1?'s':''}`+(s.doubleSided?' | Double-sided':'');
   const cd=el('sheetCalc');cd.style.display='';
-  const tp=perSheet*sheetPrintQty;
-  cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print ${sheetPrintQty} times</b> = <b>${tp}</b> total`+(tp>totalNeeded?` (${tp-totalNeeded} extra)`:'');
+  if(sheets.length===1){
+    cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print 1 time</b> = <b>${totalPlaced}</b> total`;
+  }else{
+    cd.innerHTML=`<b>${totalPlaced}</b> total across <b>${sheets.length} sheets</b> (${perSheet} per sheet)`+(unplacedPool.length>0?` · <span style="color:#b91c1c">${unplacedPool.length} didn't fit</span>`:'');
+  }
 
   el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';
   const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
@@ -1657,7 +1668,9 @@ function drawItem(page,c,x,y,p,Wp,Hp){
   const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
   const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
   if(p.rotated){
-    const rSrcW=(p.srcH||p.h)*PTS, rSrcH=(p.srcW||p.w)*PTS;
+    // Draw at native source dimensions — the CTM rotation handles the orientation
+    // swap. Passing swapped dims causes non-uniform scaling (scrunching).
+    const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
     const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
     page.pushOperators(
       PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy),
