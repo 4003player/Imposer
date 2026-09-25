@@ -1383,8 +1383,8 @@ function arrangeLayout(){
 
   if(!candidates.length){el('layoutInfo').textContent='No pieces fit on stock.';return;}
 
-  // Sort by count desc then waste asc, deduplicate by signature
-  candidates.sort((a,b)=>b.count-a.count||(a.waste-b.waste));
+  // Sort by fewest unplaced first, then most per sheet, then least waste
+  candidates.sort((a,b)=>(a.unplaced.length-b.unplaced.length)||b.count-a.count||(a.waste-b.waste));
   const seen=new Set();
   const unique=[];
   for(const c of candidates){
@@ -1419,7 +1419,13 @@ function arrangeLayout(){
     const info=document.createElement('div');
     info.className='lc-info';
     const pct=((1-cand.waste)*100).toFixed(1);
-    info.textContent=`${cand.count} up · ${pct}% util · ${cand.stockW.toFixed(0)}"×${cand.stockH.toFixed(0)}"`;
+    const unp=cand.unplaced?cand.unplaced.length:0;
+    const totalItems=cand.count+unp;
+    const sheetsNeeded=unp>0?Math.ceil(totalItems/cand.count):1;
+    let infoText=`${cand.count} up · ${pct}% util · ${cand.stockW.toFixed(0)}"×${cand.stockH.toFixed(0)}"`;
+    if(sheetsNeeded>1) infoText+=` · ${sheetsNeeded} sheets`;
+    if(unp>0) infoText+=` · ${unp} overflow`;
+    info.textContent=infoText;
     div.appendChild(info);
 
     if(i===0){
