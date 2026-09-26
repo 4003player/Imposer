@@ -158,6 +158,49 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 .layout-choice .lc-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 4px; }
 .layout-choice .lc-info { font-size: 11px; color: #86868b; }
 .layout-choice .lc-best { display: inline-block; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
+.tag-spot { background: #f3f4f6; color: #374151; }
+.spot-overlay {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.45); z-index: 1000; display: flex;
+  align-items: center; justify-content: center; backdrop-filter: blur(2px);
+}
+.spot-modal {
+  background: #fff; border-radius: 16px; padding: 28px 32px; max-width: 540px;
+  width: 92%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3); font-family: inherit;
+}
+.spot-modal h3 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.spot-modal .spot-sub { font-size: 12px; color: #86868b; margin-bottom: 16px; }
+.spot-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0; flex-wrap: wrap;
+}
+.spot-swatch {
+  width: 22px; height: 22px; border-radius: 5px; border: 1px solid #ccc; flex-shrink: 0;
+}
+.spot-name { font-size: 14px; flex: 1; font-weight: 500; min-width: 120px; }
+.spot-role select {
+  padding: 4px 8px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 12px; background: #fafafa; font-family: inherit;
+}
+.spot-gen-section {
+  margin-top: 16px; padding: 12px 14px; border-radius: 10px;
+  background: #f0f7ff; border: 1px solid #bfdbfe;
+}
+.spot-gen-section label { font-size: 13px; font-weight: 600; color: #1e40af; display: block; margin-bottom: 6px; }
+.spot-gen-section select, .spot-gen-section input {
+  padding: 7px 10px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 13px; background: #fff; width: 100%; font-family: inherit;
+}
+.spot-btn-row { display: flex; gap: 10px; margin-top: 18px; }
+.spot-btn-row button {
+  flex: 1; padding: 11px; border: none; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.spot-btn-apply { background: #0071e3; color: #fff; }
+.spot-btn-apply:hover { background: #0077ed; }
+.spot-btn-skip { background: #e5e5ea; color: #1d1d1f; }
+.spot-btn-skip:hover { background: #d1d1d6; }
 </style>
 </head>
 <body>
@@ -258,6 +301,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <div id="sheetCalc" class="info-box" style="display:none"></div>
     <div class="btn-row" id="exportRow" style="display:none">
       <button class="btn btn-primary" id="printBtn">Download Print PDF</button>
+      <button class="btn btn-primary" id="printDieBtn" style="display:none;background:#6366f1">Download Print+Die PDF</button>
       <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
       <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
     </div>
@@ -273,6 +317,14 @@ const HICKEY_SIZE=0.7, HICKEY_DEPTH=0.36, HICKEY_OFFSET=2.0;
 
 let inputFiles=[], commonBackData=null;
 let fileIdSeq=0, sheets=[], viewSheet=0, viewSide='face', sheetPrintQty=1;
+let spotColorConfig = {
+  dieSpotNames: new Set(),
+  creaseSpotNames: new Set(),
+  generatedDieName: 'CutContour',
+  generatedDieCmyk: [0, 1, 0, 0],
+  configured: false
+};
+const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
 
 function el(id){return document.getElementById(id);}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
@@ -368,8 +420,11 @@ function applyBleedOverride(){
         p.bleed=bl;p.trimW=Math.max(0.1,p.srcW-2*bl);p.trimH=Math.max(0.1,p.srcH-2*bl);
         p.physW=p.srcW;p.physH=p.srcH;
       } else {
-        // PDF: trim stays fixed (from TrimBox), bleed changes
-        p.bleed=bl;p.physW=p.trimW+2*bl;p.physH=p.trimH+2*bl;
+        // PDF: only apply bleed if source has a TrimBox (hasTrim)
+        // PDFs without TrimBox have no bleed region to expand into
+        if(p.hasTrim){
+          p.bleed=bl;p.physW=p.trimW+2*bl;p.physH=p.trimH+2*bl;
+        }
       }
     }
   }
@@ -446,10 +501,186 @@ async function handleFiles(fl){
       }
     }
   }
-  invalidateLayout();renderFileList();
+  // Collect all unique spot colors across all files/pages
+  const allSpots = new Map();
+  for(const f of inputFiles){
+    if(f.type !== 'pdf') continue;
+    for(const p of f.pages){
+      if(!p.spotColors) continue;
+      for(const sc of p.spotColors){
+        if(!allSpots.has(sc.spotName)){
+          allSpots.set(sc.spotName, {spotName: sc.spotName, cmyk: sc.cmyk, csNames: [sc.csName]});
+        } else {
+          const existing = allSpots.get(sc.spotName);
+          if(!existing.csNames.includes(sc.csName)) existing.csNames.push(sc.csName);
+        }
+      }
+    }
+  }
+  // Check if new spots appeared that haven't been configured
+  const currentSpotNames = new Set(allSpots.keys());
+  const allConfigured = spotColorConfig.configured && [...currentSpotNames].every(n =>
+    spotColorConfig.dieSpotNames.has(n) || spotColorConfig.creaseSpotNames.has(n) ||
+    (!KNOWN_DIE_NAMES.some(d => d.toLowerCase() === n.toLowerCase())));
+  if(allSpots.size > 0 && !allConfigured){
+    showSpotColorModal([...allSpots.values()], function(){
+      invalidateLayout(); renderFileList();
+    });
+  } else {
+    extractDiePathsForAllFilesAsync().then(()=>{
+      invalidateLayout(); renderFileList();
+    });
+  }
+}
+
+/* extractDiePathsForAllFilesAsync does the actual work — see below */
+
+async function extractDiePathsForAllFilesAsync(){
+  const dieNames = [...spotColorConfig.dieSpotNames, ...spotColorConfig.creaseSpotNames];
+  for(const f of inputFiles){
+    if(f.type !== 'pdf') continue;
+    for(const p of f.pages){
+      // Skip if diePaths already set (from parsePDF initial extraction)
+      if(p.diePaths) continue;
+      if(!p.spotColors || !p.spotColors.length) continue;
+      const matchingCSNames = p.spotColors
+        .filter(sc => dieNames.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+        .map(sc => sc.csName);
+      const allCSNames = [...new Set([...matchingCSNames, ...p.spotColors
+        .filter(sc => dieNames.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+        .map(sc => sc.spotName)])];
+      if(!allCSNames.length) continue;
+      // Mark as having die paths if die spots exist (even if we can't extract the paths,
+      // the embedded page XObject already contains them)
+      p.diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:p._pageW, pageH:p._pageH};
+    }
+  }
+}
+
+/* === SPOT COLOR MODAL === */
+function cmykToRgb(c,m,y,k){
+  return [Math.round(255*(1-c)*(1-k)), Math.round(255*(1-m)*(1-k)), Math.round(255*(1-y)*(1-k))];
+}
+
+function showSpotColorModal(allSpots, onConfirm){
+  const overlay = document.createElement('div');
+  overlay.className = 'spot-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'spot-modal';
+
+  let html = '<h3>Spot Colors Detected</h3>';
+  html += '<p class="spot-sub">Classify each spot color channel found in your files</p>';
+
+  for(let i=0; i<allSpots.length; i++){
+    const sp = allSpots[i];
+    const rgb = cmykToRgb(sp.cmyk[0]||0, sp.cmyk[1]||0, sp.cmyk[2]||0, sp.cmyk[3]||0);
+    const isDie = KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase());
+    html += `<div class="spot-row">`;
+    html += `<div class="spot-swatch" style="background:rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></div>`;
+    html += `<span class="spot-name">${esc(sp.spotName)}</span>`;
+    html += `<span class="spot-role"><select data-spot-idx="${i}">`;
+    html += `<option value="print"${isDie?'':' selected'}>Print color (keep)</option>`;
+    html += `<option value="die"${isDie?' selected':''}>Die line</option>`;
+    html += `<option value="crease">Crease line</option>`;
+    html += `</select></span></div>`;
+  }
+
+  html += `<div class="spot-gen-section">`;
+  html += `<label>Name for imposer-generated dies:</label>`;
+  html += `<select id="spotGenNameSel"><option value="CutContour">CutContour</option><option value="__custom__">Custom...</option></select>`;
+  html += `<input id="spotGenNameInput" style="display:none;margin-top:6px" placeholder="Custom spot name">`;
+  html += `</div>`;
+
+  html += `<div class="spot-btn-row">`;
+  html += `<button class="spot-btn-skip" id="spotSkipBtn">Skip</button>`;
+  html += `<button class="spot-btn-apply" id="spotApplyBtn">Apply</button>`;
+  html += `</div>`;
+
+  modal.innerHTML = html;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Wire up the generated-name dropdown
+  const genSel = modal.querySelector('#spotGenNameSel');
+  const genInput = modal.querySelector('#spotGenNameInput');
+  const roleSelects = modal.querySelectorAll('[data-spot-idx]');
+
+  function updateGenOptions(){
+    const dieNames = [];
+    roleSelects.forEach(sel => {
+      if(sel.value === 'die') dieNames.push(allSpots[parseInt(sel.dataset.spotIdx)].spotName);
+    });
+    const currentVal = genSel.value;
+    genSel.innerHTML = '';
+    for(const dn of dieNames){
+      const opt = document.createElement('option');
+      opt.value = dn; opt.textContent = dn;
+      genSel.appendChild(opt);
+    }
+    if(!dieNames.length){
+      const opt = document.createElement('option');
+      opt.value = 'CutContour'; opt.textContent = 'CutContour';
+      genSel.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__'; customOpt.textContent = 'Custom...';
+    genSel.appendChild(customOpt);
+    // Restore selection if still valid
+    if([...genSel.options].some(o => o.value === currentVal)) genSel.value = currentVal;
+    else if(dieNames.length) genSel.value = dieNames[0];
+    genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
+  }
+
+  roleSelects.forEach(sel => sel.addEventListener('change', updateGenOptions));
+  genSel.addEventListener('change', () => {
+    genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
+  });
+  updateGenOptions();
+
+  function applyConfig(){
+    spotColorConfig.dieSpotNames = new Set();
+    spotColorConfig.creaseSpotNames = new Set();
+    roleSelects.forEach(sel => {
+      const sp = allSpots[parseInt(sel.dataset.spotIdx)];
+      if(sel.value === 'die') spotColorConfig.dieSpotNames.add(sp.spotName);
+      else if(sel.value === 'crease') spotColorConfig.creaseSpotNames.add(sp.spotName);
+    });
+    if(genSel.value === '__custom__' && genInput.value.trim()){
+      spotColorConfig.generatedDieName = genInput.value.trim();
+    } else if(genSel.value !== '__custom__'){
+      spotColorConfig.generatedDieName = genSel.value;
+    }
+    // Find CMYK for the generated die name from existing spots
+    const matchSpot = allSpots.find(s => s.spotName === spotColorConfig.generatedDieName);
+    if(matchSpot) spotColorConfig.generatedDieCmyk = matchSpot.cmyk;
+    spotColorConfig.configured = true;
+    overlay.remove();
+    extractDiePathsForAllFilesAsync().then(onConfirm);
+  }
+
+  function skipConfig(){
+    // Use defaults: auto-detect die names
+    spotColorConfig.dieSpotNames = new Set();
+    spotColorConfig.creaseSpotNames = new Set();
+    for(const sp of allSpots){
+      if(KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase())){
+        spotColorConfig.dieSpotNames.add(sp.spotName);
+      }
+    }
+    spotColorConfig.generatedDieName = 'CutContour';
+    spotColorConfig.generatedDieCmyk = [0, 1, 0, 0];
+    spotColorConfig.configured = true;
+    overlay.remove();
+    extractDiePathsForAllFilesAsync().then(onConfirm);
+  }
+
+  modal.querySelector('#spotApplyBtn').addEventListener('click', applyConfig);
+  modal.querySelector('#spotSkipBtn').addEventListener('click', skipConfig);
 }
 
 async function parsePDF(bytes,name){
+  // Scan raw bytes for spot colors BEFORE pdf-lib touches the buffer (it corrupts the ArrayBuffer)
+  const rawSpotMap = scanRawBytesForSpots(bytes);
   const s=S(),doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
   const pages=doc.getPages(),entry={id:++fileIdSeq,name,type:'pdf',bytes,pages:[]};
   for(let i=0;i<pages.length;i++){
@@ -458,75 +689,134 @@ async function parsePDF(bytes,name){
     let physW,physH,trimW,trimH,bleed;
     if(hasTrim){trimW=tb.width/PTS;trimH=tb.height/PTS;physW=mb.width/PTS;physH=mb.height/PTS;bleed=Math.max(0,Math.min((physW-trimW)/2,(physH-trimH)/2));}
     else{physW=mb.width/PTS;physH=mb.height/PTS;trimW=physW;trimH=physH;bleed=0;}
-    // If user has set a bleed override, apply it (keep trim, adjust physW/physH)
     const userBl=s.rasterBleed;
     const srcW=physW, srcH=physH, srcBleed=bleed;
     if(userBl>0&&hasTrim){bleed=userBl;physW=trimW+2*userBl;physH=trimH+2*userBl;}
-    // Extract die line paths from the PDF
-    const diePaths = extractDiePaths(bytes, doc, i, mb.width, mb.height);
-    entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,
+    // Extract all spot colors from the page
+    const spotColors = extractAllSpotColors(bytes, doc, i, rawSpotMap);
+    // Immediately extract die paths for known die names (modal can reclassify later)
+    const knownDieCS = spotColors
+      .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+      .map(sc => sc.csName);
+    // Also include spot names themselves to match content stream references
+    const allDieCS = [...new Set([...knownDieCS, ...spotColors
+      .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+      .map(sc => sc.spotName)])];
+    let diePaths = allDieCS.length > 0 ? extractPathsForCS(bytes, doc, i, mb.width, mb.height, allDieCS) : null;
+    // If extraction failed but we KNOW die spots exist in the file, mark as present
+    // (the embedded page XObject already contains the die paths — we just can't parse them)
+    if(!diePaths && allDieCS.length > 0) diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:mb.width, pageH:mb.height};
+    console.log('parsePDF page', i, 'spotColors:', spotColors.map(s=>s.spotName+'/'+s.csName), 'allDieCS:', allDieCS, 'diePaths:', diePaths ? diePaths.paths.length+' paths' : 'null');
+    entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,spotColors,
       srcW,srcH,srcBleed,
       qty:s.masterQty,qtyOverride:false,orient:s.masterOrient,orientOverride:false,
-      side:'face',backRef:null});
+      side:'face',backRef:null,
+      _pageW:mb.width,_pageH:mb.height});
   }
   inputFiles.push(entry);
 }
 
-/* === DIE LINE EXTRACTION === */
-function extractDiePaths(pdfBytes, doc, pageIdx, pageW, pageH){
-  const dieNames = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
-  
-  // Resolve a value through refs
+/* === SPOT COLOR EXTRACTION === */
+/* Scan raw PDF bytes for CS→Separation mappings BEFORE pdf-lib corrupts the buffer */
+function scanRawBytesForSpots(pdfBytes){
+  const map = new Map(); // csName → {spotName, cmyk}
+  try{
+    const raw = new TextDecoder('latin1').decode(pdfBytes);
+    console.log('scanRawBytesForSpots: raw length=', raw.length);
+    const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
+    console.log('scanRawBytesForSpots: found', csRefs.length, 'CS refs');
+    for(const m of csRefs){
+      const csName=m[1], objNum=m[2];
+      const idx = raw.indexOf(objNum + ' 0 obj');
+      if(idx < 0) continue;
+      const chunk = raw.substring(idx, idx+500);
+      const sepMatch = chunk.match(/\/Separation\s*\/([^\s/\[\]<>]+)/i);
+      if(sepMatch){
+        const spotName = sepMatch[1];
+        let cmyk = [0,0,0,1];
+        const c1Match = chunk.match(/\/C1\s*\[\s*([\d.\s]+)\]/);
+        if(c1Match){
+          const vals = c1Match[1].trim().split(/\s+/).map(Number);
+          if(vals.length >= 4) cmyk = vals.slice(0,4);
+        }
+        map.set(csName, {spotName, cmyk});
+      }
+    }
+  }catch(e){ console.error('scanRawBytesForSpots error:', e); }
+  console.log('scanRawBytesForSpots result:', [...map.entries()].map(([k,v])=>k+'='+v.spotName));
+  return map;
+}
+
+function extractAllSpotColors(pdfBytes, doc, pageIdx, rawSpotMap){
   function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
-  
   const pg = doc.getPages()[pageIdx];
   const node = pg.node;
   let resDict = resolve(node.get(PDFLib.PDFName.of('Resources')));
-  if(!resDict || !(resDict instanceof PDFLib.PDFDict)) return null;
-  
+  if(!resDict || !(resDict instanceof PDFLib.PDFDict)) return [];
   let csDict = resolve(resDict.get(PDFLib.PDFName.of('ColorSpace')));
-  if(!csDict || !(csDict instanceof PDFLib.PDFDict)) return null;
-  
-  // Check each CS entry for die line separations
-  let dieCSNames = [];
-  try {
-    for(const [key, val] of csDict.entries()){
-      let arr = resolve(val);
-      if(arr instanceof PDFLib.PDFArray && arr.size() >= 2){
-        const type = arr.get(0);
-        const sepName = arr.get(1);
-        if(type instanceof PDFLib.PDFName && type.decodeText() === 'Separation' &&
-           sepName instanceof PDFLib.PDFName){
-          const nm = sepName.decodeText();
-          if(dieNames.some(d => nm.toLowerCase() === d.toLowerCase())){
-            dieCSNames.push(key instanceof PDFLib.PDFName ? key.decodeText() : key.toString());
+  const spots = [];
+  // Strategy 1: structured pdf-lib API
+  if(csDict && csDict instanceof PDFLib.PDFDict){
+    try {
+      console.log('extractAllSpotColors Strategy 1: csDict has', [...csDict.entries()].length, 'entries');
+      for(const [key, val] of csDict.entries()){
+        let arr = resolve(val);
+        const keyStr = key instanceof PDFLib.PDFName ? key.decodeText() : key.toString();
+        console.log('  entry', keyStr, '-> type:', arr?.constructor?.name, 'isArray:', arr instanceof PDFLib.PDFArray, 'size:', arr instanceof PDFLib.PDFArray ? arr.size() : 'n/a');
+        if(arr instanceof PDFLib.PDFArray && arr.size() >= 2){
+          const type = arr.get(0);
+          const sepName = arr.get(1);
+          console.log('    [0]:', type?.constructor?.name, type instanceof PDFLib.PDFName ? type.decodeText() : String(type));
+          console.log('    [1]:', sepName?.constructor?.name, sepName instanceof PDFLib.PDFName ? sepName.decodeText() : String(sepName));
+          if(type instanceof PDFLib.PDFName && type.decodeText() === 'Separation' &&
+             sepName instanceof PDFLib.PDFName){
+            const nm = sepName.decodeText();
+            const csName = key instanceof PDFLib.PDFName ? key.decodeText() : key.toString();
+            // Try to extract CMYK from tint transform C1
+            let cmyk = [0,0,0,1];
+            if(arr.size() >= 4){
+              const fn = resolve(arr.get(3));
+              if(fn && fn instanceof PDFLib.PDFDict){
+                const c1 = fn.get(PDFLib.PDFName.of('C1'));
+                if(c1 && c1 instanceof PDFLib.PDFArray && c1.size() >= 4){
+                  cmyk = [];
+                  for(let ci=0;ci<4;ci++){
+                    const v = c1.get(ci);
+                    cmyk.push(v && typeof v.numberValue === 'function' ? v.numberValue() :
+                              v && typeof v.value === 'function' ? parseFloat(v.value()) :
+                              typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+                  }
+                }
+              }
+            }
+            spots.push({csName, spotName: nm, cmyk});
           }
         }
+      }
+    } catch(e){ /* ignore */ }
+  }
+  // Strategy 2: use pre-scanned raw bytes map (scanned before pdf-lib corrupted the buffer)
+  if(rawSpotMap){
+    for(const [csName, info] of rawSpotMap){
+      if(!spots.find(s=>s.csName===csName)){
+        spots.push({csName, spotName: info.spotName, cmyk: info.cmyk});
       }
     }
-  } catch(e){ /* ignore */ }
-  
-  // Fallback: scan raw bytes to find CSn->Separation/DieName mappings
-  if(!dieCSNames.length){
-    try{
-      const raw = new TextDecoder('latin1').decode(pdfBytes);
-      const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
-      for(const m of csRefs){
-        const csName=m[1], objNum=m[2];
-        const idx = raw.indexOf(objNum + ' 0 obj');
-        if(idx < 0) continue;
-        const chunk = raw.substring(idx, idx+300);
-        const chunkLower = chunk.toLowerCase();
-        for(const dn of dieNames){
-          if(chunkLower.includes('/separation/'+dn.toLowerCase()) || chunkLower.includes('/separation /'+dn.toLowerCase())){
-            if(!dieCSNames.includes(csName)) dieCSNames.push(csName);
-          }
-        }
-      }
-    }catch(e){}
   }
-  
-  if(!dieCSNames.length) return null;
+  console.log('extractAllSpotColors final:', spots.map(s=>s.spotName+'/'+s.csName));
+  return spots;
+}
+
+/* === DIE LINE EXTRACTION === */
+function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
+  if(!csNames || !csNames.length) return null;
+  function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
+  const pg = doc.getPages()[pageIdx];
+  const node = pg.node;
+
+  // csNames already contains the correct CS reference names (e.g. CS7) and spot names
+  // (e.g. CutContour) from the pre-scan. Use them directly for content stream matching.
+  const dieCSNames = [...csNames];
   
   // Now parse the content stream to extract paths drawn with those CS names
   let contentStr = '';
@@ -979,6 +1269,16 @@ function renderFileList(){
     else if(f.type==='image'&&p.bleed>0)html+=` <span class="info">Bleed ${fmtNum(p.bleed)}"</span>`;
     html+=` <span class="info">Trim ${p.trimW.toFixed(1)}" x ${p.trimH.toFixed(1)}"</span>`;
     if(p.diePaths) html+=` <span class="tag tag-detect">Die detected</span>`;
+    // Spot color tags
+    if(p.spotColors && p.spotColors.length){
+      for(const sc of p.spotColors){
+        const isDie = spotColorConfig.dieSpotNames.has(sc.spotName);
+        const isCrease = spotColorConfig.creaseSpotNames.has(sc.spotName);
+        if(isDie) html+=` <span class="tag tag-detect">${esc(sc.spotName)}</span>`;
+        else if(isCrease) html+=` <span class="tag tag-detect" style="background:#fef3c7;color:#92400e">${esc(sc.spotName)}</span>`;
+        else html+=` <span class="tag tag-spot">${esc(sc.spotName)}</span>`;
+      }
+    }
     // OPW white plate
     if(p.opw){
       html+=` <span class="tag tag-white">OPW: ${esc(p.opw.name.substring(0,18))}</span>`;
@@ -1511,8 +1811,12 @@ function selectLayout(idx){
   el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';
   const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
   el('opwBtn').style.display=hasOPW?'':'none';
+  const hasDiePaths=sheets.some(sh=>sh.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
   const allHaveDie=sheets.length>0&&sheets.every(sh=>sh.placements.every(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
-  el('cutBtn').style.display=allHaveDie?'none':'';
+  // Show Print+Die when there are any die paths or when perimeter dies will be generated
+  el('printDieBtn').style.display=(hasDiePaths||sheets.length>0)?'':'none';
+  // Cut button always shows (generates perimeter cuts for files without die paths)
+  el('cutBtn').style.display='';
 }
 
 /* === MARKS === */
@@ -1783,10 +2087,20 @@ function exportCutPDF(){
           cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY)});
         }
       } else {
-        // Fall back to rectangular cut from trim dimensions
-        const cutX=(s.margin+p.x+p.bleed)*PTS;
-        const cutY=Hp-(s.margin+p.y+p.bleed+p.trimH)*PTS;
-        cuts.push({type:'rect', x:cutX, y:cutY, w:p.trimW*PTS, h:p.trimH*PTS});
+        // Fall back to rectangular cut from trim or full image edge
+        const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
+        const hasSrcBleed = srcBl > 0.001;
+        let cutX, cutY, cutW, cutH;
+        if(hasSrcBleed){
+          cutX=(s.margin+p.x+p.bleed)*PTS;
+          cutY=Hp-(s.margin+p.y+p.bleed+p.trimH)*PTS;
+          cutW=p.trimW*PTS; cutH=p.trimH*PTS;
+        } else {
+          cutX=(s.margin+p.x)*PTS;
+          cutY=Hp-(s.margin+p.y+p.h)*PTS;
+          cutW=p.w*PTS; cutH=p.h*PTS;
+        }
+        cuts.push({type:'rect', x:cutX, y:cutY, w:cutW, h:cutH});
       }
     }
     const dots=getRegDots(s.stockW,s.stockH).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
@@ -1844,15 +2158,17 @@ function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, ro
 
 function buildCutPDF(sd,W,H){
   const R=REG_R,K=KAPPA,n=sd.length,f=v=>v.toFixed(4);
+  const dieName = spotColorConfig.generatedDieName || 'CutContour';
+  const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
   function circ(cx,cy,r){return`${f(cx+r)} ${f(cy)} m ${f(cx+r)} ${f(cy+r*K)} ${f(cx+r*K)} ${f(cy+r)} ${f(cx)} ${f(cy+r)} c ${f(cx-r*K)} ${f(cy+r)} ${f(cx-r)} ${f(cy+r*K)} ${f(cx-r)} ${f(cy)} c ${f(cx-r)} ${f(cy-r*K)} ${f(cx-r*K)} ${f(cy-r)} ${f(cx)} ${f(cy-r)} c ${f(cx+r*K)} ${f(cy-r)} ${f(cx+r)} ${f(cy-r*K)} ${f(cx+r)} ${f(cy)} c f\n`;}
   const tot=3+2*n,pids=[];for(let i=0;i<n;i++)pids.push(5+2*i);
   let pdf='%PDF-1.4\n';const offs=[];
   function wo(id,b){offs[id-1]=pdf.length;pdf+=`${id} 0 obj\n${b}\nendobj\n`;}
   wo(1,'<< /Type /Catalog /Pages 2 0 R >>');
   wo(2,`<< /Type /Pages /Kids [${pids.map(i=>i+' 0 R').join(' ')}] /Count ${n} >>`);
-  wo(3,'[/Separation /CutContour /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 0 0] /N 1 >>]');
+  wo(3,`[/Separation /${dieName} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${dieCmyk.join(' ')}] /N 1 >>]`);
   for(let i=0;i<n;i++){
-    const sh=sd[i];let s='/CutContour CS\n1 SCN\n2.835 w\n';
+    const sh=sd[i];let s=`/${dieName} CS\n1 SCN\n2.835 w\n`;
     for(const c of sh.cuts){
       if(c.type==='rect'){
         s+=`${f(c.x)} ${f(c.y)} ${f(c.w)} ${f(c.h)} re S\n`;
@@ -1872,12 +2188,143 @@ function buildCutPDF(sd,W,H){
     s+='0 0 0 1 k\n';for(const d of sh.dots)s+=circ(d.cx,d.cy,R);
     const sid=4+2*i,pid=5+2*i;
     wo(sid,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
-    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << /CutContour 3 0 R >> >> >>`);
+    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << /${dieName} 3 0 R >> >> >>`);
   }
   const xo=pdf.length;pdf+=`xref\n0 ${tot+1}\n0000000000 65535 f \n`;
   for(let i=0;i<tot;i++)pdf+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
   pdf+=`trailer\n<< /Size ${tot+1} /Root 1 0 R >>\nstartxref\n${xo}\n%%EOF`;
   const b=new Uint8Array(pdf.length);for(let i=0;i<pdf.length;i++)b[i]=pdf.charCodeAt(i);return b;
+}
+
+/* === EXPORT PRINT+DIE PDF === */
+async function exportPrintDiePDF(){
+  const btn=el('printDieBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    const cache=new Map(),used=new Set();
+    for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+    for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){const sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}}
+      else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
+    let commonEmbed=null;
+    if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
+      if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
+      else{let e;if(commonBackData.mimeType==='image/jpeg')e=await outDoc.embedJpg(commonBackData.bytes);else e=await outDoc.embedPng(commonBackData.bytes);commonEmbed={ref:e,kind:'image'};}
+    }
+
+    // Create the Separation color space for generated die lines
+    const dieName = spotColorConfig.generatedDieName || 'CutContour';
+    const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+    const sepArray = outDoc.context.obj([
+      PDFLib.PDFName.of('Separation'),
+      PDFLib.PDFName.of(dieName),
+      PDFLib.PDFName.of('DeviceCMYK'),
+      outDoc.context.obj({
+        FunctionType: 2, Domain: [0,1],
+        C0: [0,0,0,0],
+        C1: dieCmyk,
+        N: 1
+      })
+    ]);
+    const csRef = outDoc.context.register(sepArray);
+    const csAlias = 'SpotDie';
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const fp=outDoc.addPage([Wp,Hp]);
+      placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
+      placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
+      // Add die lines for placements without existing die paths
+      addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName);
+
+      if(s.doubleSided){
+        let needsBack=true;
+        if(s.dblMode==='same'){
+          const pl=sheet.placements, cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
+          const allSameContent=pl.every(p=>p.fileId===pl[0].fileId&&p.pageIndex===pl[0].pageIndex);
+          if(allSameContent){
+            const tol=0.1;
+            if(s.flipAxis==='horizontal'){
+              needsBack=!pl.every(p=>{const trimY=p.y+p.bleed;const mirrorY=cH-trimY-p.trimH;return pl.some(q=>Math.abs((q.y+q.bleed)-mirrorY)<tol&&Math.abs((q.x+q.bleed)-(p.x+p.bleed))<tol);});
+            }else{
+              needsBack=!pl.every(p=>{const trimX=p.x+p.bleed;const mirrorX=cW-trimX-p.trimW;return pl.some(q=>Math.abs((q.x+q.bleed)-mirrorX)<tol&&Math.abs((q.y+q.bleed)-(p.y+p.bleed))<tol);});
+            }
+          }
+        }
+        if(needsBack){
+          const bp=outDoc.addPage([Wp,Hp]);
+          placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
+          placeMarks(bp,s,Wp,Hp,fontB,si,'Back');
+        }
+      }
+    }
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_PrintDie.pdf');
+  }catch(err){alert('Print+Die export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download Print+Die PDF';
+}
+
+function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieName){
+  // For placements WITHOUT die paths, add a perimeter rectangle in spot color
+  const needsDie = sheet.placements.filter(p => !p.diePaths || !p.diePaths.paths || !p.diePaths.paths.length);
+  console.log('addDieLinesToPage:', sheet.placements.length, 'placements,', needsDie.length, 'need die.',
+    sheet.placements.map(p => p.label + ': diePaths=' + (p.diePaths ? p.diePaths.paths.length + ' paths' : 'null')));
+  if(!needsDie.length) return;
+
+  // Add spot color to page resources
+  const pageDict = page.node;
+  let resources = pageDict.get(PDFLib.PDFName.of('Resources'));
+  if(resources instanceof PDFLib.PDFRef) resources = outDoc.context.lookup(resources);
+  let csDict = resources.get(PDFLib.PDFName.of('ColorSpace'));
+  if(!csDict){
+    csDict = outDoc.context.obj({});
+    resources.set(PDFLib.PDFName.of('ColorSpace'), csDict);
+  } else if(csDict instanceof PDFLib.PDFRef){
+    csDict = outDoc.context.lookup(csDict);
+  }
+  csDict.set(PDFLib.PDFName.of(csAlias), csRef);
+
+  // Build content stream for die rectangles
+  let cutOps = '';
+  for(const p of needsDie){
+    // If source has no bleed (srcBleed=0), die goes at the full image perimeter
+    // If source has bleed, die goes at the trim position (inside the bleed)
+    const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
+    const hasSrcBleed = srcBl > 0.001;
+    let dieX, dieY, dieW, dieH;
+    if(hasSrcBleed){
+      // Die at trim position
+      dieX = (s.margin + p.x + p.bleed) * PTS;
+      dieY = Hp - (s.margin + p.y + p.bleed + p.trimH) * PTS;
+      dieW = p.trimW * PTS;
+      dieH = p.trimH * PTS;
+    } else {
+      // No source bleed — die at full image edge (physW × physH)
+      dieX = (s.margin + p.x) * PTS;
+      dieY = Hp - (s.margin + p.y + p.h) * PTS;
+      dieW = p.w * PTS;
+      dieH = p.h * PTS;
+    }
+    cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
+  }
+
+  // Append as new content stream
+  const streamBytes = new TextEncoder().encode(cutOps);
+  const stream = outDoc.context.stream(streamBytes);
+  const streamRef = outDoc.context.register(stream);
+  let contents = pageDict.get(PDFLib.PDFName.of('Contents'));
+  if(contents instanceof PDFLib.PDFRef){
+    const arr = outDoc.context.obj([contents]);
+    pageDict.set(PDFLib.PDFName.of('Contents'), arr);
+    contents = arr;
+  }
+  if(contents instanceof PDFLib.PDFArray){
+    contents.push(streamRef);
+  }
 }
 
 function download(bytes,name){
@@ -1888,6 +2335,7 @@ function download(bytes,name){
 
 el('arrangeBtn').addEventListener('click',arrangeLayout);
 el('printBtn').addEventListener('click',exportPrintPDF);
+el('printDieBtn').addEventListener('click',exportPrintDiePDF);
 el('opwBtn').addEventListener('click',exportOPWPDF);
 el('cutBtn').addEventListener('click',exportCutPDF);
 </script>
