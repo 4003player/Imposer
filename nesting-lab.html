@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nesting Lab</title>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI',sans-serif;background:#f5f5f7;color:#1d1d1f;padding:30px}
+.container{max-width:900px;margin:0 auto}
+h1{font-size:20px;margin-bottom:16px}
+.card{background:#fff;border-radius:12px;padding:20px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.card h2{font-size:12px;font-weight:600;color:#86868b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.form-row{display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;align-items:end}
+.form-group{display:flex;flex-direction:column}
+.form-group label{font-size:11px;font-weight:600;color:#86868b;margin-bottom:2px}
+.form-group input{padding:7px 10px;border:1px solid #d2d2d7;border-radius:6px;font-size:13px;width:80px;background:#fafafa}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;background:#0071e3;color:#fff}
+.btn:hover{background:#0077ed}
+.results{margin-top:10px;font-size:13px;line-height:1.7}
+.results b{color:#0071e3}
+canvas{border:1px solid #d2d2d7;border-radius:8px;max-width:100%;margin-top:10px}
+.compare{display:flex;gap:16px;flex-wrap:wrap}
+.compare>div{flex:1;min-width:300px}
+.compare h3{font-size:13px;margin-bottom:6px;color:#333}
+
+.file-drop{
+  border:2px dashed #d2d2d7;border-radius:12px;padding:30px;
+  text-align:center;cursor:pointer;background:#fafafa;transition:all .2s;margin-bottom:10px;
+}
+.file-drop:hover,.file-drop.dragover{border-color:#0071e3;background:#f0f7ff}
+.file-drop p{font-size:14px;color:#6e6e73}
+.file-drop .sub{font-size:11px;color:#aaa;margin-top:4px}
+.file-drop input{display:none}
+
+.piece-tag{
+  display:inline-flex;align-items:center;gap:6px;background:#f0f0f5;border-radius:6px;
+  padding:4px 10px;margin:3px;font-size:12px;
+}
+.piece-tag .name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.piece-tag button{background:none;border:none;color:#c33;cursor:pointer;font-weight:bold;font-size:14px}
+.piece-tag .dims{color:#0071e3;font-weight:600}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Nesting Lab — Mixed-Size Bin Packing</h1>
+
+<div class="card">
+  <h2>Stock</h2>
+  <div class="form-row">
+    <div class="form-group"><label>Width (in)</label><input type="number" id="stockW" value="96" step="0.5"></div>
+    <div class="form-group"><label>Height (in)</label><input type="number" id="stockH" value="48" step="0.5"></div>
+    <div class="form-group"><label>Gutter (in)</label><input type="number" id="gutter" value="0.5" step="0.125"></div>
+    <div class="form-group"><label>DPI (raster)</label><input type="number" id="dpi" value="150" min="72"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Drop Files or Add Manual Pieces</h2>
+  <div class="file-drop" id="dropZone">
+    <p>📄 Drop PDFs, images, or TIFFs here</p>
+    <p class="sub">.pdf .ai .jpg .png .tif .tiff — multi-page PDFs add each page</p>
+    <input type="file" id="fileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" multiple>
+  </div>
+  <div class="form-row">
+    <div class="form-group"><label>W (in)</label><input type="number" id="newW" value="21.5" step="0.25"></div>
+    <div class="form-group"><label>H (in)</label><input type="number" id="newH" value="30" step="0.25"></div>
+    <div class="form-group"><label>Qty</label><input type="number" id="newQ" value="1" min="1"></div>
+    <button class="btn" onclick="addManualPiece()">+ Add Manual</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pieces</h2>
+  <div id="pieceList" style="min-height:24px"></div>
+</div>
+
+<div class="card">
+  <button class="btn" onclick="runAll()" style="width:100%">Run All Strategies</button>
+  <div id="output" class="results"></div>
+</div>
+
+<div class="compare" id="compareArea"></div>
+
+</div>
+<script>
+const PTS = 72;
+let pieces = []; // [{w, h, qty, name, fromFile}]
+
+/* === TIFF decode === */
+function decodeTiff(buf){
+  const ifds=UTIF.decode(buf);
+  UTIF.decodeImage(buf,ifds[0]);
+  return {w:ifds[0].width, h:ifds[0].height};
+}
+
+/* === FILE DROP === */
+const dropZone=document.getElementById('dropZone');
+const fileInput=document.getElementById('fileInput');
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>{handleFiles(fileInput.files);fileInput.value='';});
+
+async function handleFiles(fl){
+  const dpi=parseFloat(document.getElementById('dpi').value)||150;
+  for(const file of fl){
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const ext=file.name.split('.').pop().toLowerCase();
+    const baseName=file.name.replace(/\.[^.]+$/,'');
+    try{
+      if(ext==='pdf'||ext==='ai'){
+        const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+        const pages=doc.getPages();
+        for(let i=0;i<pages.length;i++){
+          const pg=pages[i],mb=pg.getMediaBox(),tb=pg.getTrimBox();
+          const hasTrim=Math.abs(tb.width-mb.width)>0.5||Math.abs(tb.height-mb.height)>0.5||
+                        Math.abs(tb.x-mb.x)>0.5||Math.abs(tb.y-mb.y)>0.5;
+          const w=hasTrim?tb.width/PTS:mb.width/PTS;
+          const h=hasTrim?tb.height/PTS:mb.height/PTS;
+          const physW=mb.width/PTS, physH=mb.height/PTS;
+          const pgLabel=pages.length>1?` p${i+1}`:'';
+          pieces.push({w:physW,h:physH,trimW:w,trimH:h,qty:1,name:baseName+pgLabel,fromFile:true});
+        }
+      } else if(['tif','tiff'].includes(ext)){
+        const dec=decodeTiff(bytes.buffer);
+        pieces.push({w:dec.w/dpi,h:dec.h/dpi,trimW:dec.w/dpi,trimH:dec.h/dpi,qty:1,name:baseName,fromFile:true});
+      } else if(['jpg','jpeg','png'].includes(ext)){
+        const blob=new Blob([bytes],{type:file.type}),url=URL.createObjectURL(blob);
+        const img=new Image();
+        await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});
+        URL.revokeObjectURL(url);
+        pieces.push({w:img.naturalWidth/dpi,h:img.naturalHeight/dpi,
+          trimW:img.naturalWidth/dpi,trimH:img.naturalHeight/dpi,
+          qty:1,name:baseName,fromFile:true});
+      }
+    }catch(err){alert(`Could not read ${file.name}: ${err.message}`);}
+  }
+  renderPieces();
+}
+
+/* === MANUAL PIECES === */
+function addManualPiece(){
+  const w=parseFloat(document.getElementById('newW').value)||10;
+  const h=parseFloat(document.getElementById('newH').value)||10;
+  const q=parseInt(document.getElementById('newQ').value)||1;
+  pieces.push({w,h,trimW:w,trimH:h,qty:q,name:`${w}"x${h}"`,fromFile:false});
+  renderPieces();
+}
+
+function removePiece(i){pieces.splice(i,1);renderPieces();}
+
+function updateQty(i,val){
+  pieces[i].qty=Math.max(1,parseInt(val)||1);
+}
+
+function renderPieces(){
+  let html='';
+  pieces.forEach((p,i)=>{
+    html+=`<div class="piece-tag">`;
+    html+=`<span class="name" title="${p.name}">${p.name}</span> `;
+    html+=`<span class="dims">${p.w.toFixed(1)}" x ${p.h.toFixed(1)}"</span> `;
+    html+=`x<input type="number" value="${p.qty}" min="1" style="width:40px;padding:2px 4px;border:1px solid #d2d2d7;border-radius:4px;font-size:11px;text-align:center" onchange="updateQty(${i},this.value)"> `;
+    html+=`<button onclick="removePiece(${i})">&times;</button></div>`;
+  });
+  if(!pieces.length) html='<span style="color:#aaa;font-size:12px">No pieces — drop files or add manually</span>';
+  document.getElementById('pieceList').innerHTML=html;
+}
+
+function expandPieces(){
+  const items=[];
+  for(const p of pieces)
+    for(let i=0;i<p.qty;i++)
+      items.push({w:p.w,h:p.h,id:p.name+(p.qty>1?` #${i+1}`:'')});
+  return items;
+}
+
+/* ============================================================
+   STRATEGY 1: Simple shelf (current imposer)
+   ============================================================ */
+function packShelf(items, binW, binH, gut){
+  const sorted=[...items].sort((a,b)=>b.h-a.h||b.w-a.w);
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rowH=0;
+  for(const it of sorted){
+    if(it.w>binW+.001||it.h>binH+.001){unplaced.push(it);continue;}
+    if(cX+it.w>binW+.001){cX=0;cY+=rowH+gut;rowH=0;}
+    if(cY+it.h>binH+.001){unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw:it.w,ph:it.h});
+    cX+=it.w+gut;rowH=Math.max(rowH,it.h);
+  }
+  return{placed,unplaced};
+}
+
+/* ============================================================
+   STRATEGY 2: Shelf with rotation
+   ============================================================ */
+function packShelfRotate(items, binW, binH, gut){
+  const sorted=[...items].sort((a,b)=>Math.max(b.w,b.h)-Math.max(a.w,a.h));
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rowH=0;
+  for(const it of sorted){
+    const fits=(w,h)=>w<=binW+.001&&h<=binH+.001;
+    const fitsRow=(w,h)=>(cX+w<=binW+.001)&&(cY+h<=binH+.001);
+    const fitsNewRow=(w,h)=>(w<=binW+.001)&&(cY+rowH+gut+h<=binH+.001);
+
+    let pw,ph,rot=false;
+
+    if(fitsRow(it.w,it.h)){pw=it.w;ph=it.h;}
+    else if(fitsRow(it.h,it.w)){pw=it.h;ph=it.w;rot=true;}
+    else if(fitsNewRow(it.w,it.h)){cX=0;cY+=rowH+gut;rowH=0;pw=it.w;ph=it.h;}
+    else if(fitsNewRow(it.h,it.w)){cX=0;cY+=rowH+gut;rowH=0;pw=it.h;ph=it.w;rot=true;}
+    else if(!fits(it.w,it.h)&&!fits(it.h,it.w)){unplaced.push(it);continue;}
+    else{unplaced.push(it);continue;}
+
+    placed.push({...it,x:cX,y:cY,pw,ph,rotated:rot});
+    cX+=pw+gut;rowH=Math.max(rowH,ph);
+  }
+  return{placed,unplaced};
+}
+
+/* ============================================================
+   STRATEGY 3: Zone split — group by size, try all zone orderings
+   ============================================================ */
+function packZoneSplit(items, binW, binH, gut){
+  const groups=new Map();
+  for(const it of items){
+    const key=`${Math.min(it.w,it.h).toFixed(2)}_${Math.max(it.w,it.h).toFixed(2)}`;
+    if(!groups.has(key)) groups.set(key,[]);
+    groups.get(key).push(it);
+  }
+  const groupList=[...groups.values()];
+  if(groupList.length<2) return null; // no benefit from zone split with 1 group
+
+  let bestResult=null, bestCount=0, bestWaste=Infinity;
+  const perms=permute(groupList);
+
+  for(const perm of perms){
+    for(const [bW,bH] of [[binW,binH],[binH,binW]]){
+      const result=tryZoneOrder(perm,bW,bH,gut);
+      const waste=calcWaste(result.placed,bW,bH);
+      if(result.totalPlaced>bestCount||(result.totalPlaced===bestCount&&waste<bestWaste)){
+        bestCount=result.totalPlaced;bestWaste=waste;
+        bestResult={...result,stockW:bW,stockH:bH,strategy:'zone-split'};
+      }
+    }
+  }
+  return bestResult;
+}
+
+function tryZoneOrder(groups,binW,binH,gut){
+  let usedH=0;
+  const allPlaced=[],allUnplaced=[];
+
+  for(const group of groups){
+    const remainH=binH-usedH;
+    if(remainH<=0){allUnplaced.push(...group);continue;}
+
+    let bestPack=null,bestN=0;
+    for(const rotate of [false,true]){
+      const oriented=group.map(it=>rotate?{...it,w:it.h,h:it.w,rotated:true}:{...it,rotated:false});
+      const pack=packShelf(oriented,binW,remainH,gut);
+      if(pack.placed.length>bestN){bestN=pack.placed.length;bestPack={...pack,wasRotated:rotate};}
+    }
+    if(bestPack&&bestPack.placed.length>0){
+      let maxUsed=0;
+      for(const p of bestPack.placed){
+        p.y+=usedH;
+        if(p.rotated===undefined) p.rotated=bestPack.wasRotated;
+        maxUsed=Math.max(maxUsed,(p.y-usedH)+p.ph);
+      }
+      allPlaced.push(...bestPack.placed);
+      allUnplaced.push(...bestPack.unplaced);
+      usedH+=maxUsed+gut;
+    } else {
+      allUnplaced.push(...group);
+    }
+  }
+  return{placed:allPlaced,unplaced:allUnplaced,totalPlaced:allPlaced.length};
+}
+
+/* ============================================================
+   STRATEGY 4: Best of all
+   ============================================================ */
+function packExhaustive(items, binW, binH, gut){
+  let bestResult=null,bestCount=0,bestWaste=Infinity;
+
+  function consider(r,sW,sH,strat){
+    if(!r)return;
+    const cnt=r.placed?r.placed.length:(r.totalPlaced||0);
+    const waste=calcWaste(r.placed||[],sW,sH);
+    if(cnt>bestCount||(cnt===bestCount&&waste<bestWaste)){
+      bestCount=cnt;bestWaste=waste;
+      bestResult={placed:r.placed,unplaced:r.unplaced,stockW:r.stockW||sW,stockH:r.stockH||sH,strategy:strat};
+    }
+  }
+
+  for(const [bW,bH] of [[binW,binH],[binH,binW]]){
+    consider(packShelf(items,bW,bH,gut),bW,bH,'shelf');
+    consider(packShelfRotate(items,bW,bH,gut),bW,bH,'shelf+rotate');
+  }
+  const zr=packZoneSplit(items,binW,binH,gut);
+  if(zr) consider(zr,zr.stockW,zr.stockH,'zone-split');
+
+  return bestResult;
+}
+
+function calcWaste(placed,bW,bH){
+  let usedArea=0;
+  for(const p of placed) usedArea+=(p.pw||p.w)*(p.ph||p.h);
+  return 1-usedArea/(bW*bH);
+}
+
+function permute(arr){
+  if(arr.length<=1) return [arr];
+  if(arr.length>5) return [arr]; // cap to avoid explosion
+  const result=[];
+  for(let i=0;i<arr.length;i++){
+    const rest=[...arr.slice(0,i),...arr.slice(i+1)];
+    for(const p of permute(rest)) result.push([arr[i],...p]);
+  }
+  return result;
+}
+
+/* ============================================================
+   VISUALIZATION
+   ============================================================ */
+function drawResult(canvas,result){
+  const bW=result.stockW,bH=result.stockH;
+  const maxCW=420,maxCH=350;
+  const scale=Math.min(maxCW/bW,maxCH/bH);
+  canvas.width=Math.ceil(bW*scale);canvas.height=Math.ceil(bH*scale);
+  const ctx=canvas.getContext('2d');
+
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#ccc';ctx.strokeRect(0,0,canvas.width-1,canvas.height-1);
+
+  const colors=['#dbeafe','#fef3c7','#d1fae5','#fde8e8','#e0e7ff','#fce7f3','#f0fdf4','#fef9c3'];
+  const sizeKeys=new Map();let ci=0;
+  for(const p of result.placed){
+    const key=`${Math.min(p.w,p.h).toFixed(1)}_${Math.max(p.w,p.h).toFixed(1)}`;
+    if(!sizeKeys.has(key)) sizeKeys.set(key,colors[ci++%colors.length]);
+  }
+
+  for(const p of result.placed){
+    const pw=p.pw||p.w,ph=p.ph||p.h;
+    const x=p.x*scale,y=p.y*scale,w=pw*scale,h=ph*scale;
+    const key=`${Math.min(p.w,p.h).toFixed(1)}_${Math.max(p.w,p.h).toFixed(1)}`;
+    ctx.fillStyle=sizeKeys.get(key)||'#ddd';
+    ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle='#0071e3';ctx.lineWidth=1;
+    ctx.strokeRect(x+.5,y+.5,w-1,h-1);
+    ctx.fillStyle='#333';
+    const fs=Math.max(7,Math.min(11,Math.min(w,h)/6));
+    ctx.font=`${fs}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    let lbl=p.id||`${p.w}x${p.h}`;
+    if(p.rotated) lbl+=' ↻';
+    if(lbl.length>16) lbl=lbl.substring(0,14)+'…';
+    ctx.fillText(lbl,x+w/2,y+h/2);
+  }
+}
+
+/* ============================================================
+   RUN ALL
+   ============================================================ */
+function runAll(){
+  const bW=parseFloat(document.getElementById('stockW').value)||96;
+  const bH=parseFloat(document.getElementById('stockH').value)||48;
+  const gut=parseFloat(document.getElementById('gutter').value)||0.5;
+  const items=expandPieces();
+
+  if(!items.length){document.getElementById('output').innerHTML='Add some pieces first.';return;}
+
+  const strategies=[
+    {name:'Shelf (current imposer)',fn:()=>{const r=packShelf(items,bW,bH,gut);return{...r,stockW:bW,stockH:bH,strategy:'shelf'};}},
+    {name:'Shelf + rotation',fn:()=>{const r=packShelfRotate(items,bW,bH,gut);return{...r,stockW:bW,stockH:bH,strategy:'shelf+rotate'};}},
+    {name:'Shelf + rotation (flipped stock)',fn:()=>{const r=packShelfRotate(items,bH,bW,gut);return{...r,stockW:bH,stockH:bW,strategy:'shelf+rotate flip'};}},
+    {name:'Zone split (best)',fn:()=>packExhaustive(items,bW,bH,gut)},
+  ];
+
+  let html='<br>';
+  const area=document.getElementById('compareArea');area.innerHTML='';
+  let bestIdx=0,bestCount=0,bestWaste=1;
+
+  strategies.forEach((s,i)=>{
+    const result=s.fn();
+    const waste=calcWaste(result.placed,result.stockW,result.stockH);
+    const pct=((1-waste)*100).toFixed(1);
+
+    if(result.placed.length>bestCount||(result.placed.length===bestCount&&waste<bestWaste)){
+      bestCount=result.placed.length;bestWaste=waste;bestIdx=i;
+    }
+
+    const isBest=(i===strategies.length-1); // tag last one checked after loop
+    html+=`<b>${s.name}</b>: ${result.placed.length}/${items.length} placed, ${pct}% util`;
+    if(result.strategy) html+=` (${result.strategy})`;
+    html+=` — ${result.stockW}" × ${result.stockH}"<br>`;
+
+    const div=document.createElement('div');
+    const h3=document.createElement('h3');
+    h3.textContent=s.name;
+    div.appendChild(h3);
+    const canvas=document.createElement('canvas');
+    drawResult(canvas,result);
+    div.appendChild(canvas);
+    const info=document.createElement('div');
+    info.style.cssText='font-size:12px;margin-top:4px';
+    info.innerHTML=`${result.placed.length}/${items.length} placed · ${pct}% · ${result.stockW}" × ${result.stockH}"`;
+    div.appendChild(info);
+    area.appendChild(div);
+  });
+
+  // Mark best
+  const cards=area.querySelectorAll(':scope > div');
+  cards.forEach((c,i)=>{
+    const info=c.querySelector('div:last-child');
+    if(i===bestIdx) info.innerHTML+=' <span style="background:#d1fae5;color:#065f46;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">★ BEST</span>';
+  });
+
+  document.getElementById('output').innerHTML=html;
+}
+
+renderPieces();
+</script>
+</body>
+</html>

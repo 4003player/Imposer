@@ -282,6 +282,8 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   </div>
   <!-- Hidden OPW file picker -->
   <input type="file" id="opwFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+  <input type="file" id="opwAllFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+  <input type="file" id="backsAllFileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" style="display:none">
 
   <!-- LAYOUT -->
   <div id="layoutSection" style="display:none">
@@ -1221,7 +1223,7 @@ opwInput.addEventListener('change',async()=>{
   const p=f.pages.find(x=>x.index===opwTargetPageIndex);if(!p)return;
   try{
     if(ext==='pdf'||ext==='ai'){
-      p.opw={name:file.name,type:'pdf',bytes};
+      p.opw={name:file.name,type:'pdf',bytes,pageIndex:0};
     }else if(['tif','tiff'].includes(ext)){
       const dec=await decodeTiff(bytes.buffer);
       p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
@@ -1243,6 +1245,91 @@ function removeOPW(fid,pidx){
   p.opw=null;renderFileList();
 }
 
+/* === BULK OPW (all pages) === */
+let opwAllTargetFileId=null;
+const opwAllInput=el('opwAllFileInput');
+opwAllInput.addEventListener('change',async()=>{
+  if(!opwAllInput.files[0]||opwAllTargetFileId===null)return;
+  const file=opwAllInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const f=inputFiles.find(x=>x.id===opwAllTargetFileId);if(!f){opwAllInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+      const pgCount=doc.getPageCount();
+      for(let i=0;i<f.pages.length;i++){
+        const opwIdx=Math.min(i,pgCount-1);
+        f.pages[i].opw={name:file.name+(pgCount>1?' p'+(opwIdx+1):''),type:'pdf',bytes,pageIndex:opwIdx};
+      }
+    }else if(['tif','tiff'].includes(ext)){
+      const dec=await decodeTiff(bytes.buffer);
+      for(const p of f.pages) p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
+    }else{
+      for(const p of f.pages) p.opw={name:file.name,type:'image',bytes,mimeType:file.type||'image/png'};
+    }
+  }catch(err){alert('Could not read OPW file: '+err.message);}
+  opwAllInput.value='';opwAllTargetFileId=null;
+  renderFileList();
+});
+function pickOPWAll(fid){
+  opwAllTargetFileId=fid;
+  opwAllInput.click();
+}
+function removeOPWAll(fid){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  for(const p of f.pages) p.opw=null;
+  renderFileList();
+}
+
+/* === BULK BACKS (all pages) === */
+let backsAllTargetFileId=null;
+const backsAllInput=el('backsAllFileInput');
+backsAllInput.addEventListener('change',async()=>{
+  if(!backsAllInput.files[0]||backsAllTargetFileId===null)return;
+  const file=backsAllInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const faceFile=inputFiles.find(x=>x.id===backsAllTargetFileId);if(!faceFile){backsAllInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      await parsePDF(bytes,file.name);
+    }else if(['tif','tiff'].includes(ext)){
+      await parseTiff(bytes,file.name);
+    }else if(['jpg','jpeg','png'].includes(ext)){
+      await parseRaster(bytes,file.name,file.type);
+    }
+    // The newly added file is the last in inputFiles
+    const backFile=inputFiles[inputFiles.length-1];
+    // Set all its pages as backs, pair 1-to-1
+    const s=S();
+    for(let i=0;i<backFile.pages.length&&i<faceFile.pages.length;i++){
+      backFile.pages[i].side='back';
+      backFile.pages[i].backRef={fileId:faceFile.id,pageIndex:faceFile.pages[i].index};
+    }
+    // Also ensure double-sided different mode is active
+    if(!s.doubleSided){
+      document.querySelector('input[name=printMode][value=double]').checked=true;
+      onPrintModeChange();
+    }
+    if(el('dblMode').value!=='different'){
+      el('dblMode').value='different';
+      onDblModeChange();
+    }
+    // Re-set backs after mode change (onDblModeChange resets sides)
+    for(let i=0;i<backFile.pages.length&&i<faceFile.pages.length;i++){
+      backFile.pages[i].side='back';
+      backFile.pages[i].backRef={fileId:faceFile.id,pageIndex:faceFile.pages[i].index};
+    }
+  }catch(err){alert('Could not read Backs file: '+err.message);}
+  backsAllInput.value='';backsAllTargetFileId=null;
+  invalidateLayout();renderFileList();
+});
+function pickBacksAll(fid){
+  backsAllTargetFileId=fid;
+  backsAllInput.click();
+}
+
 /* === FILE LIST === */
 function renderFileList(){
   if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
@@ -1255,9 +1342,24 @@ function renderFileList(){
   let qtyIdx=100;
   const flatRows=[];for(const f of inputFiles)for(const p of f.pages)flatRows.push({fileId:f.id,pageIndex:p.index});
   let html='';
+  let lastFileId=null;
   for(let ri=0;ri<flatRows.length;ri++){
     const row=flatRows[ri],f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
     const p=f.pages.find(x=>x.index===row.pageIndex);if(!p)continue;
+    // File-level header for multi-page files
+    if(f.pages.length>1&&f.id!==lastFileId){
+      lastFileId=f.id;
+      const allHaveOpw=f.pages.every(pg=>pg.opw);
+      html+=`<div style="padding:6px 12px;background:#eef2ff;border-radius:8px 8px 0 0;margin-top:8px;margin-bottom:0;font-size:12px;font-weight:600;color:#3730a3;display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
+      html+=`<span>📄 ${esc(f.name)} (${f.pages.length} pages)</span>`;
+      if(allHaveOpw){
+        html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPWAll(${f.id})" style="border-color:#b91c1c;color:#b91c1c;background:#fef2f2">✕ OPW all</button>`;
+      }else{
+        html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPWAll(${f.id})">+ OPW all pages</button>`;
+      }
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickBacksAll(${f.id})" style="border-color:#6366f1;color:#3730a3;background:#eef2ff">+ Backs all pages</button>`;
+      html+=`</div>`;
+    }else if(f.pages.length<=1){lastFileId=f.id;}
     const pgL=f.pages.length>1?` p${p.index+1}`:'';
     const isBack=isDblDiff&&p.side==='back';
     html+=`<div class="file-item" draggable="true" data-ri="${ri}" ondragstart="onDragStart(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">`;
@@ -1330,6 +1432,50 @@ function invalidateLayout(){
   el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
   el('layoutChoices').style.display='none';
 }
+
+/* === QTY SCRUBBER === */
+// Prevent row drag when interacting with qty inputs; add drag-to-scrub
+(function(){
+  let scrubEl=null, scrubStartY=0, scrubStartVal=0, scrubDirty=false;
+  document.addEventListener('mousedown',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(!inp)return;
+    // Block the parent row's drag
+    e.stopPropagation();
+    inp.closest('[draggable]')?.setAttribute('draggable','false');
+    scrubEl=inp; scrubStartY=e.clientY; scrubStartVal=parseInt(inp.value)||0; scrubDirty=false;
+    inp.style.cursor='ns-resize';
+    document.addEventListener('mousemove',onScrubMove);
+    document.addEventListener('mouseup',onScrubUp);
+  });
+  function onScrubMove(e){
+    if(!scrubEl)return;
+    const dy=scrubStartY-e.clientY; // up = positive
+    const step=Math.round(dy/8);
+    if(Math.abs(dy)>3) scrubDirty=true;
+    if(!scrubDirty)return;
+    const nv=Math.max(0,Math.min(200,scrubStartVal+step));
+    scrubEl.value=nv;
+    scrubEl.dispatchEvent(new Event('change'));
+  }
+  function onScrubUp(e){
+    document.removeEventListener('mousemove',onScrubMove);
+    document.removeEventListener('mouseup',onScrubUp);
+    if(!scrubEl)return;
+    scrubEl.style.cursor='';
+    scrubEl.closest('.file-item')?.setAttribute('draggable','true');
+    if(!scrubDirty){
+      // Was a plain click — focus the input for typing
+      scrubEl.focus();
+    }
+    scrubEl=null;
+  }
+  // Double-click selects all text
+  document.addEventListener('dblclick',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(inp){ inp.focus(); inp.select(); }
+  });
+})();
 
 /* === DRAG SORT === */
 let dragSrcRi=null;
@@ -2033,7 +2179,8 @@ async function exportOPWPDF(){
       const key=`${f.id}-${p.index}`;
       if(p.opw.type==='pdf'){
         const sd=await PDFLib.PDFDocument.load(p.opw.bytes,{ignoreEncryption:true});
-        const[e]=await outDoc.embedPages([sd.getPages()[0]]);
+        const opwPageIdx=p.opw.pageIndex||0;
+        const[e]=await outDoc.embedPages([sd.getPages()[opwPageIdx]]);
         opwCache.set(key,{ref:e,kind:'page'});
       }else{
         let e;
