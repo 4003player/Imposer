@@ -2086,14 +2086,11 @@ function findBackSource(p){
   if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
   if(s.dblMode==='common')return commonBackData?{common:true}:null;
   // "different" mode: backRef is stored on the BACK page pointing to the face.
-  // Search all back pages to find one whose backRef matches this face placement.
   for(const f of inputFiles)for(const pg of f.pages){
     if(pg.side==='back'&&pg.backRef&&pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
-      console.log('findBackSource FOUND:', {faceFileId:p.fileId, facePageIdx:p.pageIndex, backFileId:f.id, backPageIdx:pg.index, backSide:pg.side});
       return{fileId:f.id,pageIndex:pg.index};
     }
   }
-  console.log('findBackSource NOT FOUND for face:', {fileId:p.fileId, pageIndex:p.pageIndex, dblMode:s.dblMode, allPages: inputFiles.flatMap(f=>f.pages.map(pg=>({fid:f.id,idx:pg.index,side:pg.side,backRef:pg.backRef})))});
   return null;
 }
 
@@ -2158,7 +2155,8 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
       const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
       drawItem(page,c,x,y,p,Wp,Hp);
     }else{
-      // Back side: reposition for flip (no content mirroring — physical sheet flip handles that)
+      // Back side: reposition for flip, rotate content 180° so art reads right-side-up
+      // when the sheet is flipped like a book
       const trimX=(s.margin+p.x+p.bleed)*PTS, trimY=(s.margin+p.y+p.bleed)*PTS;
       const trimW=p.trimW*PTS, trimH=p.trimH*PTS;
       let bx,by;
@@ -2171,15 +2169,21 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
         const backTrimX=Wp-trimX-trimW;
         bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
       }
-      drawItem(page,c,bx,by,p,Wp,Hp);
+      drawItem(page,c,bx,by,p,Wp,Hp,true);
     }
   }
 }
 
-function drawItem(page,c,x,y,p,Wp,Hp){
+function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
   const w=p.w*PTS,h=p.h*PTS;
   // Clip to the user's bleed box (trim + user bleed on each side)
   page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
+  // For back pages: rotate 180° around the item center so art reads right-side-up after sheet flip
+  if(rotate180){
+    const cx=x+w/2, cy=y+h/2;
+    // Rotate 180°: cos(180)=-1, sin(180)=0 → matrix [-1,0,0,-1,2cx,2cy]
+    page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1,2*cx,2*cy));
+  }
   // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
   const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
   // Offset to align trim: source bleed may differ from user bleed
