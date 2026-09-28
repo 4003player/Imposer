@@ -2169,7 +2169,7 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
         const backTrimX=Wp-trimX-trimW;
         bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
       }
-      drawItem(page,c,bx,by,p,Wp,Hp,true);
+      drawItem(page,c,bx,by,p,Wp,Hp, s.flipAxis==='vertical' ? p.rotated : !p.rotated);
     }
   }
 }
