@@ -2089,9 +2089,11 @@ function findBackSource(p){
   // Search all back pages to find one whose backRef matches this face placement.
   for(const f of inputFiles)for(const pg of f.pages){
     if(pg.side==='back'&&pg.backRef&&pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
+      console.log('findBackSource FOUND:', {faceFileId:p.fileId, facePageIdx:p.pageIndex, backFileId:f.id, backPageIdx:pg.index, backSide:pg.side});
       return{fileId:f.id,pageIndex:pg.index};
     }
   }
+  console.log('findBackSource NOT FOUND for face:', {fileId:p.fileId, pageIndex:p.pageIndex, dblMode:s.dblMode, allPages: inputFiles.flatMap(f=>f.pages.map(pg=>({fid:f.id,idx:pg.index,side:pg.side,backRef:pg.backRef})))});
   return null;
 }
 
