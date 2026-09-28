@@ -1330,6 +1330,52 @@ function pickBacksAll(fid){
   backsAllInput.click();
 }
 
+/* === SINGLE-PAGE BACK PICKER === */
+let backSingleTargetFileId=null,backSingleTargetPageIdx=null;
+const backSingleInput=document.createElement('input');
+backSingleInput.type='file';backSingleInput.accept='.pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff';backSingleInput.style.display='none';
+document.body.appendChild(backSingleInput);
+backSingleInput.addEventListener('change',async()=>{
+  if(!backSingleInput.files[0]||backSingleTargetFileId===null)return;
+  const file=backSingleInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const faceFile=inputFiles.find(x=>x.id===backSingleTargetFileId);
+  if(!faceFile){backSingleInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai') await parsePDF(bytes,file.name);
+    else if(['tif','tiff'].includes(ext)) await parseTiff(bytes,file.name);
+    else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
+    const backFile=inputFiles[inputFiles.length-1];
+    const s=S();
+    // Set first page of back file as back, paired to the target face page
+    if(backFile.pages.length>0){
+      backFile.pages[0].side='back';
+      backFile.pages[0].backRef={fileId:backSingleTargetFileId,pageIndex:backSingleTargetPageIdx};
+    }
+    if(!s.doubleSided){
+      document.querySelector('input[name=printMode][value=double]').checked=true;
+      onPrintModeChange();
+    }
+    if(el('dblMode').value!=='different'){
+      el('dblMode').value='different';
+      onDblModeChange();
+    }
+    // Re-set after mode change
+    if(backFile.pages.length>0){
+      backFile.pages[0].side='back';
+      backFile.pages[0].backRef={fileId:backSingleTargetFileId,pageIndex:backSingleTargetPageIdx};
+    }
+  }catch(err){alert('Could not read Back file: '+err.message);}
+  backSingleInput.value='';backSingleTargetFileId=null;backSingleTargetPageIdx=null;
+  invalidateLayout();renderFileList();
+});
+function pickBack(fid,pidx){
+  backSingleTargetFileId=fid;
+  backSingleTargetPageIdx=pidx;
+  backSingleInput.click();
+}
+
 /* === FILE LIST === */
 function renderFileList(){
   if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
@@ -1387,6 +1433,10 @@ function renderFileList(){
       html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPW(${f.id},${p.index})">x</button>`;
     } else {
       html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPW(${f.id},${p.index})">+ OPW</button>`;
+    }
+    // Back upload button (only for face pages in different mode, or always when not in different mode)
+    if(!isBack){
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickBack(${f.id},${p.index})" style="border-color:#6366f1;color:#3730a3;background:#eef2ff">+ Back</button>`;
     }
     // Orientation
     html+=` <select onchange="updatePage(${f.id},${p.index},'orient',this.value)">`;
@@ -1475,6 +1525,11 @@ function invalidateLayout(){
     const inp=e.target.closest('.qty-input');
     if(inp){ inp.focus(); inp.select(); }
   });
+  // Disable scroll wheel on qty inputs
+  document.addEventListener('wheel',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(inp){ e.preventDefault(); }
+  },{passive:false});
 })();
 
 /* === DRAG SORT === */
