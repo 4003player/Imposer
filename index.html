@@ -1330,52 +1330,6 @@ function pickBacksAll(fid){
   backsAllInput.click();
 }
 
-/* === SINGLE-PAGE BACK PICKER === */
-let backSingleTargetFileId=null,backSingleTargetPageIdx=null;
-const backSingleInput=document.createElement('input');
-backSingleInput.type='file';backSingleInput.accept='.pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff';backSingleInput.style.display='none';
-document.body.appendChild(backSingleInput);
-backSingleInput.addEventListener('change',async()=>{
-  if(!backSingleInput.files[0]||backSingleTargetFileId===null)return;
-  const file=backSingleInput.files[0];
-  const bytes=new Uint8Array(await file.arrayBuffer());
-  const ext=file.name.split('.').pop().toLowerCase();
-  const faceFile=inputFiles.find(x=>x.id===backSingleTargetFileId);
-  if(!faceFile){backSingleInput.value='';return;}
-  try{
-    if(ext==='pdf'||ext==='ai') await parsePDF(bytes,file.name);
-    else if(['tif','tiff'].includes(ext)) await parseTiff(bytes,file.name);
-    else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
-    const backFile=inputFiles[inputFiles.length-1];
-    const s=S();
-    // Set first page of back file as back, paired to the target face page
-    if(backFile.pages.length>0){
-      backFile.pages[0].side='back';
-      backFile.pages[0].backRef={fileId:backSingleTargetFileId,pageIndex:backSingleTargetPageIdx};
-    }
-    if(!s.doubleSided){
-      document.querySelector('input[name=printMode][value=double]').checked=true;
-      onPrintModeChange();
-    }
-    if(el('dblMode').value!=='different'){
-      el('dblMode').value='different';
-      onDblModeChange();
-    }
-    // Re-set after mode change
-    if(backFile.pages.length>0){
-      backFile.pages[0].side='back';
-      backFile.pages[0].backRef={fileId:backSingleTargetFileId,pageIndex:backSingleTargetPageIdx};
-    }
-  }catch(err){alert('Could not read Back file: '+err.message);}
-  backSingleInput.value='';backSingleTargetFileId=null;backSingleTargetPageIdx=null;
-  invalidateLayout();renderFileList();
-});
-function pickBack(fid,pidx){
-  backSingleTargetFileId=fid;
-  backSingleTargetPageIdx=pidx;
-  backSingleInput.click();
-}
-
 /* === FILE LIST === */
 function renderFileList(){
   if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
@@ -1433,10 +1387,6 @@ function renderFileList(){
       html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPW(${f.id},${p.index})">x</button>`;
     } else {
       html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPW(${f.id},${p.index})">+ OPW</button>`;
-    }
-    // Back upload button (only for face pages in different mode, or always when not in different mode)
-    if(!isBack){
-      html+=` <button class="btn-opw" tabindex="-1" onclick="pickBack(${f.id},${p.index})" style="border-color:#6366f1;color:#3730a3;background:#eef2ff">+ Back</button>`;
     }
     // Orientation
     html+=` <select onchange="updatePage(${f.id},${p.index},'orient',this.value)">`;
@@ -1525,11 +1475,6 @@ function invalidateLayout(){
     const inp=e.target.closest('.qty-input');
     if(inp){ inp.focus(); inp.select(); }
   });
-  // Disable scroll wheel on qty inputs
-  document.addEventListener('wheel',function(e){
-    const inp=e.target.closest('.qty-input');
-    if(inp){ e.preventDefault(); }
-  },{passive:false});
 })();
 
 /* === DRAG SORT === */
@@ -2085,13 +2030,9 @@ function findBackSource(p){
   const s=S();if(!s.doubleSided)return null;
   if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
   if(s.dblMode==='common')return commonBackData?{common:true}:null;
-  // "different" mode: backRef is stored on the BACK page pointing to the face.
-  for(const f of inputFiles)for(const pg of f.pages){
-    if(pg.side==='back'&&pg.backRef&&pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
-      return{fileId:f.id,pageIndex:pg.index};
-    }
-  }
-  return null;
+  const f=inputFiles.find(x=>x.id===p.fileId);if(!f)return null;
+  const pg=f.pages.find(x=>x.index===p.pageIndex);if(!pg||!pg.backRef)return null;
+  return{fileId:pg.backRef.fileId,pageIndex:pg.backRef.pageIndex};
 }
 
 /* === EXPORT PRINT PDF === */
@@ -2155,8 +2096,7 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
       const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
       drawItem(page,c,x,y,p,Wp,Hp);
     }else{
-      // Back side: reposition for flip, rotate content 180° so art reads right-side-up
-      // when the sheet is flipped like a book
+      // Back side: reposition for flip (no content mirroring — physical sheet flip handles that)
       const trimX=(s.margin+p.x+p.bleed)*PTS, trimY=(s.margin+p.y+p.bleed)*PTS;
       const trimW=p.trimW*PTS, trimH=p.trimH*PTS;
       let bx,by;
@@ -2169,21 +2109,15 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
         const backTrimX=Wp-trimX-trimW;
         bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
       }
-      drawItem(page,c,bx,by,p,Wp,Hp, s.flipAxis==='vertical' ? p.rotated : !p.rotated);
+      drawItem(page,c,bx,by,p,Wp,Hp);
     }
   }
 }
 
-function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
+function drawItem(page,c,x,y,p,Wp,Hp){
   const w=p.w*PTS,h=p.h*PTS;
   // Clip to the user's bleed box (trim + user bleed on each side)
   page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
-  // For back pages: rotate 180° around the item center so art reads right-side-up after sheet flip
-  if(rotate180){
-    const cx=x+w/2, cy=y+h/2;
-    // Rotate 180°: cos(180)=-1, sin(180)=0 → matrix [-1,0,0,-1,2cx,2cy]
-    page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1,2*cx,2*cy));
-  }
   // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
   const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
   // Offset to align trim: source bleed may differ from user bleed
