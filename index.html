@@ -2085,9 +2085,14 @@ function findBackSource(p){
   const s=S();if(!s.doubleSided)return null;
   if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
   if(s.dblMode==='common')return commonBackData?{common:true}:null;
-  const f=inputFiles.find(x=>x.id===p.fileId);if(!f)return null;
-  const pg=f.pages.find(x=>x.index===p.pageIndex);if(!pg||!pg.backRef)return null;
-  return{fileId:pg.backRef.fileId,pageIndex:pg.backRef.pageIndex};
+  // "different" mode: backRef is stored on the BACK page pointing to the face.
+  // Search all back pages to find one whose backRef matches this face placement.
+  for(const f of inputFiles)for(const pg of f.pages){
+    if(pg.side==='back'&&pg.backRef&&pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
+      return{fileId:f.id,pageIndex:pg.index};
+    }
+  }
+  return null;
 }
 
 /* === EXPORT PRINT PDF === */
