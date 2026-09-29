@@ -304,6 +304,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
     <div class="btn-row" id="exportRow" style="display:none">
       <button class="btn btn-primary" id="printBtn">Download Print PDF</button>
       <button class="btn btn-primary" id="printDieBtn" style="display:none;background:#6366f1">Download Print+Die PDF</button>
+      <label id="regDotsLabel" style="display:none;font-size:12px;color:#666;align-self:center;gap:4px;cursor:pointer;user-select:none"><input type="checkbox" id="regDotsChk" checked style="cursor:pointer"> Reg dots</label>
       <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
       <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
     </div>
@@ -1961,6 +1962,7 @@ function selectLayout(idx){
   const allHaveDie=sheets.length>0&&sheets.every(sh=>sh.placements.every(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
   // Show Print+Die when there are any die paths or when perimeter dies will be generated
   el('printDieBtn').style.display=(hasDiePaths||sheets.length>0)?'':'none';
+  el('regDotsLabel').style.display=(hasDiePaths||sheets.length>0)?'inline-flex':'none';
   // Cut button always shows (generates perimeter cuts for files without die paths)
   el('cutBtn').style.display='';
 }
@@ -2159,9 +2161,9 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
   page.pushOperators(PDFLib.popGraphicsState());
 }
 
-function placeMarks(page,s,Wp,Hp,font,si,sideLabel){
+function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
   const black=PDFLib.cmyk(0,0,0,1);
-  for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+  if(!(opts&&opts.skipRegDots)) for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
   for(const h of getHickeys(s.stockW,s.stockH)){
     page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
   }
@@ -2367,6 +2369,7 @@ async function exportPrintDiePDF(){
   const btn=el('printDieBtn');btn.disabled=true;btn.textContent='Building...';
   try{
     const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const markOpts=el('regDotsChk').checked?{}:{skipRegDots:true};
     const outDoc=await PDFLib.PDFDocument.create();
     if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
     const fontB = slugFontBytes
@@ -2404,7 +2407,7 @@ async function exportPrintDiePDF(){
       const sheet=sheets[si];
       const fp=outDoc.addPage([Wp,Hp]);
       placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
-      placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
+      placeMarks(fp,s,Wp,Hp,fontB,si,'Face',markOpts);
       // Add die lines for placements without existing die paths
       addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName);
 
@@ -2425,7 +2428,7 @@ async function exportPrintDiePDF(){
         if(needsBack){
           const bp=outDoc.addPage([Wp,Hp]);
           placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
-          placeMarks(bp,s,Wp,Hp,fontB,si,'Back');
+          placeMarks(bp,s,Wp,Hp,fontB,si,'Back',markOpts);
         }
       }
     }
