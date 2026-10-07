@@ -558,13 +558,7 @@ async function handleFiles(fl){
     return ['jpg','jpeg','png','tif','tiff'].includes(ext);
   });
   if(hasNewRaster){
-    const currentBleed = parseFloat(el('rasterBleed').value) || 0;
-    const input = prompt('Enter bleed for raster images (in inches).\nThis will be subtracted from all sides to create the cut line.\n(Use "Enlarge to Bleed" to scale art outward instead.)\n\nCurrent value: ' + currentBleed + '"', currentBleed.toString());
-    if(input !== null){
-      const bl = Math.max(0, parseFloat(input) || 0);
-      el('rasterBleed').value = bl;
-      applyBleedOverride();
-    }
+    applyBleedOverride();
   }
   // Collect all unique spot colors across all files/pages
   const allSpots = new Map();
