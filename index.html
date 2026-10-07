@@ -67,7 +67,14 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
   padding: 8px 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   background: #f9f9f9; border-radius: 8px; margin-bottom: 4px; font-size: 13px;
 }
-.file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 100px; }
+.file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 100px; position: relative; }
+.file-item .name:hover { overflow: visible; z-index: 10; }
+.file-item .name:hover::after {
+  content: attr(title); position: absolute; left: 0; top: 100%;
+  background: #1d1d1f; color: #fff; padding: 4px 10px; border-radius: 6px;
+  font-size: 12px; white-space: nowrap; z-index: 100; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2); max-width: 600px; overflow-wrap: break-word; white-space: normal;
+}
 .file-item .info { color: #86868b; font-size: 11px; white-space: nowrap; }
 .file-item .drag-handle {
   cursor: grab; margin-right: 4px; color: #bbb; font-size: 15px;
@@ -227,6 +234,16 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <div class="form-group"><label>Substrate</label><input type="text" id="stockName" placeholder="e.g. Coroplast 4mm"></div>
       <div class="form-group"><label>Image DPI</label><input type="number" id="imageDPI" value="150" min="72"></div>
       <div class="form-group"><label>Bleed (in)</label><input type="number" id="rasterBleed" value="0.25" min="0" step="0.0625"></div>
+      <div class="form-group"><label>Inset (in)</label><input type="number" id="insetVal" value="0" min="0" step="0.0625" title="Moves die inward from file edge"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Safe Area (in)</label><input type="number" id="safeArea" value="0" min="0" step="0.25" title="Margin around sheet edge — no art or bleed, marks OK"></div>
+      <div class="form-group"><label>Enlarge to Bleed</label>
+        <select id="enlargeBleed">
+          <option value="no">No</option>
+          <option value="yes">Yes — scale art to add bleed</option>
+        </select>
+      </div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Master Qty</label><input type="number" id="masterQty" value="1" min="1" max="200"></div>
@@ -308,6 +325,10 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
       <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
     </div>
+    <div id="markOptions" style="display:none;margin-top:8px;text-align:center;font-size:12px;color:#666">
+      <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeSlug" checked> Slug</label>
+      <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeHickeys" checked> Hickeys</label>
+    </div>
     <p class="note">Colors, resolution, and spot channels are preserved -- no rasterization.</p>
     <div style="text-align:center;margin-top:16px;"><button onclick="location.reload()" style="padding:12px 32px;border:none;border-radius:10px;background:#0071e3;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit;">Make Another</button></div>
   </div>
@@ -329,6 +350,32 @@ let spotColorConfig = {
 };
 const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
 
+/* CMYK JPEG handling: detect 4-component JPEGs and convert to PNG via canvas.
+   Illustrator ignores /Decode on DCTDecode images, causing YCCK negatives.
+   Converting CMYK JPEGs to PNG at load time avoids the issue entirely. */
+function isCmykJpeg(bytes){
+  // Scan SOF markers for component count = 4
+  for(let i=0;i<bytes.length-9;i++){
+    if(bytes[i]!==0xFF) continue;
+    if(bytes[i+1]>=0xC0 && bytes[i+1]<=0xC2){
+      return bytes[i+9]===4; // 4 components = CMYK/YCCK
+    }
+  }
+  return false;
+}
+async function cmykJpegToPng(bytes){
+  // Decode via canvas (browser handles YCCK→RGB internally)
+  const blob=new Blob([bytes],{type:'image/jpeg'});
+  const url=URL.createObjectURL(blob);
+  const img=new Image();
+  await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});
+  URL.revokeObjectURL(url);
+  const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+  const ctx=c.getContext('2d');ctx.drawImage(img,0,0);
+  const pngBlob=await new Promise(r=>c.toBlob(r,'image/png'));
+  return new Uint8Array(await pngBlob.arrayBuffer());
+}
+
 function el(id){return document.getElementById(id);}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtNum(n){return parseFloat(n.toFixed(3)).toString();}
@@ -338,8 +385,8 @@ function S(){
     stockW:parseFloat(el('stockW').value)||48, stockH:parseFloat(el('stockH').value)||96,
     stockName:el('stockName').value.trim(), jobName:el('jobName').value.trim(),
     jobNumber:el('jobNumber').value.trim(), gutter:parseFloat(el('gutter').value)||0,
-    dpi:parseFloat(el('imageDPI').value)||150, rasterBleed:parseFloat(el('rasterBleed').value)||0,
-    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:MARGIN,
+    dpi:parseFloat(el('imageDPI').value)||150, rasterBleed:parseFloat(el('rasterBleed').value)||0, inset:parseFloat(el('insetVal').value)||0, safeArea:parseFloat(el('safeArea').value)||0, enlargeBleed:el('enlargeBleed').value==='yes',
+    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:Math.max(MARGIN,parseFloat(el('safeArea').value)||0),
     doubleSided:document.querySelector('input[name=printMode]:checked').value==='double',
     flipAxis:document.querySelector('input[name=flipAxis]:checked').value,
     dblMode:el('dblMode').value,
@@ -413,20 +460,42 @@ el('masterOrient').addEventListener('change',()=>{
 });
 el('rasterBleed').addEventListener('change',applyBleedOverride);
 el('rasterBleed').addEventListener('input',applyBleedOverride);
+el('enlargeBleed').addEventListener('change',applyBleedOverride);
+el('insetVal').addEventListener('change',()=>{invalidateLayout();});
+el('insetVal').addEventListener('input',()=>{invalidateLayout();});
+el('safeArea').addEventListener('change',()=>{invalidateLayout();});
+el('safeArea').addEventListener('input',()=>{invalidateLayout();});
 function applyBleedOverride(){
   const bl=parseFloat(el('rasterBleed').value)||0;
+  const enlarge=el('enlargeBleed').value==='yes';
   for(const f of inputFiles){
     for(const p of f.pages){
       // Save original source dimensions on first override
       if(p.srcW===undefined){p.srcW=p.physW;p.srcH=p.physH;p.srcBleed=p.bleed;}
       if(f.type==='image'){
-        p.bleed=bl;p.trimW=Math.max(0.1,p.srcW-2*bl);p.trimH=Math.max(0.1,p.srcH-2*bl);
-        p.physW=p.srcW;p.physH=p.srcH;
+        if(enlarge && bl > 0){
+          // Enlarge mode: art scaled up to create bleed, cut at original size
+          // physW/physH grow by 2*bl, trim stays at original srcW/srcH
+          p.bleed=bl;
+          p.trimW=p.srcW; p.trimH=p.srcH;
+          p.physW=p.srcW+2*bl; p.physH=p.srcH+2*bl;
+          p.enlargeBleed=true;
+        } else {
+          p.bleed=bl;p.trimW=Math.max(0.1,p.srcW-2*bl);p.trimH=Math.max(0.1,p.srcH-2*bl);
+          p.physW=p.srcW;p.physH=p.srcH;
+          p.enlargeBleed=false;
+        }
       } else {
         // PDF: only apply bleed if source has a TrimBox (hasTrim)
         // PDFs without TrimBox have no bleed region to expand into
         if(p.hasTrim){
           p.bleed=bl;p.physW=p.trimW+2*bl;p.physH=p.trimH+2*bl;
+        } else if(enlarge && bl > 0){
+          // PDF without TrimBox: enlarge to add bleed
+          p.bleed=bl;
+          p.trimW=p.srcW; p.trimH=p.srcH;
+          p.physW=p.srcW+2*bl; p.physH=p.srcH+2*bl;
+          p.enlargeBleed=true;
         }
       }
     }
@@ -490,18 +559,11 @@ async function handleFiles(fl){
   });
   if(hasNewRaster){
     const currentBleed = parseFloat(el('rasterBleed').value) || 0;
-    const input = prompt('Enter bleed for raster images (in inches).\nThis will be subtracted from all sides to create the cut line.\n\nCurrent value: ' + currentBleed + '"', currentBleed.toString());
+    const input = prompt('Enter bleed for raster images (in inches).\nThis will be subtracted from all sides to create the cut line.\n(Use "Enlarge to Bleed" to scale art outward instead.)\n\nCurrent value: ' + currentBleed + '"', currentBleed.toString());
     if(input !== null){
       const bl = Math.max(0, parseFloat(input) || 0);
       el('rasterBleed').value = bl;
-      for(const f of inputFiles){
-        if(f.type !== 'image') continue;
-        for(const p of f.pages){
-          p.bleed = bl;
-          p.trimW = Math.max(0.1, p.physW - 2*bl);
-          p.trimH = Math.max(0.1, p.physH - 2*bl);
-        }
-      }
+      applyBleedOverride();
     }
   }
   // Collect all unique spot colors across all files/pages
@@ -1199,13 +1261,21 @@ function parseTiffIfdFull(d, base) {
 }
 
 async function parseRaster(bytes,name,mimeType){
-  const blob=new Blob([bytes],{type:mimeType}),url=URL.createObjectURL(blob);
-  const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
   const s=S();
   const fileDPI=detectDpiFromBytes(bytes,name);
   const dpi=fileDPI||s.dpi;
+  let embedBytes=bytes, embedMime=mimeType;
+  // CMYK JPEGs: convert to PNG to avoid YCCK /Decode issues (Illustrator negative)
+  const isJpg=mimeType==='image/jpeg'||mimeType==='image/jpg';
+  if(isJpg && isCmykJpeg(bytes)){
+    console.log('CMYK JPEG detected — converting to PNG for universal compatibility');
+    embedBytes=await cmykJpegToPng(bytes);
+    embedMime='image/png';
+  }
+  const blob=new Blob([embedBytes],{type:embedMime}),url=URL.createObjectURL(blob);
+  const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
   const physW=img.naturalWidth/dpi,physH=img.naturalHeight/dpi,bl=s.rasterBleed;
-  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes,mimeType,
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes:embedBytes,mimeType:embedMime,
     imageW:img.naturalWidth,imageH:img.naturalHeight,
     pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
       bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
@@ -1365,7 +1435,7 @@ function renderFileList(){
     const isBack=isDblDiff&&p.side==='back';
     html+=`<div class="file-item" draggable="true" data-ri="${ri}" ondragstart="onDragStart(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">`;
     html+=`<span class="drag-handle">&#9776;</span>`;
-    html+=`<span class="name">${esc(f.name)}${pgL}</span>`;
+    html+=`<span class="name" title="${esc(f.name)}${pgL}">${esc(f.name)}${pgL}</span>`;
     html+=`<span class="info">${p.physW.toFixed(1)}" x ${p.physH.toFixed(1)}"</span>`;
     if(f.type==='image'&&p.dpi) html+=` <span class="info">${p.dpi} DPI</span>`;
     if(p.hasTrim)html+=` <span class="tag tag-detect">Bleed ${fmtNum(p.bleed)}"</span>`;
@@ -1516,7 +1586,7 @@ function collectPieces(forceRotated){
       fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:p.bleed,rotated:ori.rotated,
       canFlip:isAuto, physW:p.physW, physH:p.physH, trimWOrig:p.trimW, trimHOrig:p.trimH,
       srcW:p.srcW||p.physW, srcH:p.srcH||p.physH, srcBleed:p.srcBleed!==undefined?p.srcBleed:p.bleed,
-      diePaths:p.diePaths||null,
+      enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
       label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')+(p.qty>1?` #${q+1}`:''),
     });
   }
@@ -1955,7 +2025,7 @@ function selectLayout(idx){
     cd.innerHTML=`<b>${totalPlaced}</b> total across <b>${sheets.length} sheets</b> (${perSheet} per sheet)`+(unplacedPool.length>0?` · <span style="color:#b91c1c">${unplacedPool.length} didn't fit</span>`:'');
   }
 
-  el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';
+  el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';el('markOptions').style.display=perSheet>0?'':'none';
   const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
   el('opwBtn').style.display=hasOPW?'':'none';
   const hasDiePaths=sheets.some(sh=>sh.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
@@ -2139,33 +2209,65 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
   if(rotate180){
     page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, 2*x+w, 2*y+h));
   }
-  // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
-  const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
-  // Offset to align trim: source bleed may differ from user bleed
-  const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
-  const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
-  if(p.rotated){
-    // Draw at native source dimensions — the CTM rotation handles the orientation
-    // swap. Passing swapped dims causes non-uniform scaling (scrunching).
-    const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
-    const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
-    page.pushOperators(
-      PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy),
-    );
-    if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
-    else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+
+  // Enlarge mode: stretch source to fill bleed box (non-proportional scale, no resample)
+  if(p.enlargeBleed){
+    if(p.rotated){
+      page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h));
+      // Draw source at enlarged dims (h wide × w tall in the rotated coord space)
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:h,height:w});
+      else page.drawImage(c.ref,{x:0,y:0,width:h,height:w});
+    } else {
+      if(c.kind==='page') page.drawPage(c.ref,{x:x,y:y,width:w,height:h});
+      else page.drawImage(c.ref,{x:x,y:y,width:w,height:h});
+    }
   } else {
-    if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
-    else page.drawImage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+    // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
+    const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
+    // Offset to align trim: source bleed may differ from user bleed
+    const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
+    const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
+    if(p.rotated){
+      // Draw at native source dimensions — the CTM rotation handles the orientation
+      // swap. Passing swapped dims causes non-uniform scaling (scrunching).
+      const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
+      const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
+      page.pushOperators(
+        PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy),
+      );
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+      else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+    } else {
+      if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+      else page.drawImage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+    }
   }
   page.pushOperators(PDFLib.popGraphicsState());
 }
 
 function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
   const black=PDFLib.cmyk(0,0,0,1);
+  const doSlug=!(opts&&opts.skipSlug)&&el('includeSlug').checked;
+  const doHickeys=!(opts&&opts.skipHickeys)&&el('includeHickeys').checked;
+
+  // Reg dots, hickeys, and slug are clipped to the margin strip (outside content+bleed area)
+  // Using even-odd rule: full page rect + inner content rect = margin strip only
+  const mPts=s.margin*PTS;
+  const innerX=mPts, innerY=mPts, innerW=Wp-2*mPts, innerH=Hp-2*mPts;
+  page.pushOperators(PDFLib.pushGraphicsState());
+  // Even-odd clip: outer page + inner content hole
+  page.pushOperators(
+    PDFLib.rectangle(0,0,Wp,Hp),
+    PDFLib.rectangle(innerX,innerY,innerW,innerH),
+    PDFLib.PDFOperator.of('W*'),
+    PDFLib.endPath()
+  );
+
   if(!(opts&&opts.skipRegDots)) for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
-  for(const h of getHickeys(s.stockW,s.stockH)){
-    page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
+  if(doHickeys){
+    for(const h of getHickeys(s.stockW,s.stockH)){
+      page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
+    }
   }
   if(s.doubleSided){
     const ax=(s.stockW-s.margin-0.5)*PTS,ay=0.45*PTS-5,sh=16,hw=5,hl=8;
@@ -2179,7 +2281,12 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
       page.drawSvgPath(`M ${ax-sh-hl} ${ay} L ${ax-sh} ${ay+hw} L ${ax-sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
     }
   }
-  page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-0.45*PTS,size:20,font,color:black});
+  if(doSlug){
+    // Scale slug text to fit in margin strip; at minimum 8pt
+    const slugSize=Math.max(8,Math.min(20,mPts*0.7));
+    page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-mPts*0.65,size:slugSize,font,color:black});
+  }
+  page.pushOperators(PDFLib.popGraphicsState());
 }
 
 /* === EXPORT OPW PDF === */
@@ -2268,6 +2375,15 @@ function exportCutPDF(){
           cutY=Hp-(s.margin+p.y+p.h)*PTS;
           cutW=p.w*PTS; cutH=p.h*PTS;
         }
+        // Apply inset — move cut inward
+        const inset = s.inset || 0;
+        if(inset > 0){
+          cutX += inset * PTS;
+          cutY += inset * PTS;
+          cutW -= 2 * inset * PTS;
+          cutH -= 2 * inset * PTS;
+        }
+        if(cutW > 0 && cutH > 0)
         cuts.push({type:'rect', x:cutX, y:cutY, w:cutW, h:cutH});
       }
     }
@@ -2457,6 +2573,7 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
   }
   csDict.set(PDFLib.PDFName.of(csAlias), csRef);
 
+  const inset = s.inset || 0;
   // Build content stream for die rectangles
   let cutOps = '';
   for(const p of needsDie){
@@ -2478,6 +2595,14 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
       dieW = p.w * PTS;
       dieH = p.h * PTS;
     }
+    // Apply inset — move die inward
+    if(inset > 0){
+      dieX += inset * PTS;
+      dieY += inset * PTS;
+      dieW -= 2 * inset * PTS;
+      dieH -= 2 * inset * PTS;
+    }
+    if(dieW > 0 && dieH > 0)
     cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
   }
 
