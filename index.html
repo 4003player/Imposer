@@ -2244,20 +2244,20 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
   const doSlug=!(opts&&opts.skipSlug)&&el('includeSlug').checked;
   const doHickeys=!(opts&&opts.skipHickeys)&&el('includeHickeys').checked;
 
-  // Reg dots, hickeys, and slug are clipped to the margin strip (outside content+bleed area)
+  // Reg dots are drawn ABOVE all layers — not clipped by safe area
+  if(!(opts&&opts.skipRegDots)) for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+
+  // Hickeys and slug are clipped to the margin strip (outside content+bleed area)
   // Using even-odd rule: full page rect + inner content rect = margin strip only
   const mPts=s.margin*PTS;
   const innerX=mPts, innerY=mPts, innerW=Wp-2*mPts, innerH=Hp-2*mPts;
   page.pushOperators(PDFLib.pushGraphicsState());
-  // Even-odd clip: outer page + inner content hole
   page.pushOperators(
     PDFLib.rectangle(0,0,Wp,Hp),
     PDFLib.rectangle(innerX,innerY,innerW,innerH),
     PDFLib.PDFOperator.of('W*'),
     PDFLib.endPath()
   );
-
-  if(!(opts&&opts.skipRegDots)) for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
   if(doHickeys){
     for(const h of getHickeys(s.stockW,s.stockH)){
       page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
