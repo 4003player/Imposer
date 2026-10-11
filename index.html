@@ -2199,13 +2199,12 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
 
   // Back-side content: North model — tops of files always point to North on both sides.
   // For top/bottom (horizontal) flip: North moves to opposite side → 180° rotation to point North again.
+  //   BUT for rotated items, the 180° would flip the 90°CW to 90°CCW (wrong direction).
+  //   Skip the 180° for rotated items — the Y-mirrored position handles the TB flip,
+  //   and the 90°CW rotation stays the same direction as the face.
   // For left/right (vertical) flip: North stays at top → no content transform, just X-mirrored position.
-  if(isBack){
-    if(flipAxis==='horizontal'){
-      page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, x+w, y+h));
-    }else{
-      // LR: no content transform — right-reading at X-mirrored position
-    }
+  if(isBack && flipAxis==='horizontal' && !p.rotated){
+    page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, x+w, y+h));
   }
 
   // Legacy 180° rotation (kept for compatibility, not used in new back-side path)
@@ -2230,21 +2229,10 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
     const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
     if(p.rotated){
       const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
-      if(isBack && flipAxis==='horizontal'){
-        // 180° CTM already applied above — 90° CW offset must account
-        // for the flipped coordinate system. Combined 180°+90°CW:
-        // source (0,0)→(x+w, y) top-left, (rSrcW,rSrcH)→(x, y+h) bottom-right
-        // when rox = srcBl-usrBl, roy = h-(srcBl-usrBl).
-        const rox=srcBl-usrBl, roy=h-(srcBl-usrBl);
-        page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy));
-        if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
-        else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
-      } else {
-        const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
-        page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy));
-        if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
-        else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
-      }
+      const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
+      page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy));
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+      else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
     } else if(isBack && flipAxis==='horizontal'){
       // 180° CTM already applied — draw at (0,0) in the rotated coordinate space
       // CTM maps (0,0)→(x+w, y+h), so draw at (0,0) with srcW×srcH fills the clip
