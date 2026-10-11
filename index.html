@@ -2266,8 +2266,8 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
     }
   }
   if(doSlug){
-    // Scale slug text to fit in margin strip; at minimum 8pt
-    const slugSize=Math.max(8,Math.min(20,mPts*0.7));
+    // Slug text — doubled size for readability
+    const slugSize=Math.max(16,Math.min(40,mPts*1.4));
     page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-mPts*0.65,size:slugSize,font,color:black});
   }
   page.pushOperators(PDFLib.popGraphicsState());
@@ -2327,7 +2327,7 @@ async function exportOPWPDF(){
 /* === EXPORT CUT PDF === */
 function exportCutPDF(){
   const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
-  const sd=sheets.map(sheet=>{
+  const sd=sheets.map((sheet,sheetIndex)=>{
     const cuts=[];
     for(const p of sheet.placements){
       const posX=(s.margin+p.x)*PTS;
@@ -2372,6 +2372,12 @@ function exportCutPDF(){
       }
     }
     const dots=getRegDots(s.stockW,s.stockH).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
+    // Shift one reg dot per sheet to prevent wrong cut file usage.
+    // Move the second dot (top-left area) by sheetIndex * 1.5" along X.
+    // Each sheet's cut file has a uniquely positioned dot pattern.
+    if(dots.length>1){
+      dots[1].cx += sheetIndex * 1.5 * PTS;
+    }
     return{cuts,dots};
   });
   download(buildCutPDF(sd,Wp,Hp),fileName(s)+'_Cut.pdf');
