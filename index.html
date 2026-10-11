@@ -1856,22 +1856,12 @@ function arrangeLayout(){
     }
   }
 
-  // Shelf packer (current) — both orientations, both item rotations
+  // Shelf packer — both orientations
   tryStrategy('Shelf',itemsNormal,cW,cH);
   tryStrategy('Shelf (stock flipped)',itemsNormal,cH,cW);
   if(hasAuto){
     tryStrategy('Shelf (rotated)',itemsRotated,cW,cH);
     tryStrategy('Shelf (rotated + flipped)',itemsRotated,cH,cW);
-  }
-
-  // Shelf with per-piece rotation
-  for(const[bW,bH,label]of[[cW,cH,''],[cH,cW,' flipped']]){
-    const sr=packShelfRotate(itemsNormal,bW,bH,s.gutter);
-    if(sr.placed.length>0){
-      const pl=[...sr.placed];
-      centerPlacements(pl,bW,bH);
-      candidates.push({name:'Shelf+Rotate'+label,placed:pl,unplaced:sr.unplaced,stockW:bW+2*s.margin,stockH:bH+2*s.margin,contentW:bW,contentH:bH,waste:calcWaste(pl,bW,bH),count:pl.length});
-    }
   }
 
   // Zone split
@@ -1881,15 +1871,6 @@ function arrangeLayout(){
     const zbW=zr.stockW,zbH=zr.stockH;
     centerPlacements(pl,zbW,zbH);
     candidates.push({name:'Zone Split',placed:pl,unplaced:zr.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
-  }
-  if(hasAuto){
-    const zr2=packZoneSplit(itemsRotated,cW,cH,s.gutter);
-    if(zr2&&zr2.placed.length>0){
-      const pl=[...zr2.placed];
-      const zbW=zr2.stockW,zbH=zr2.stockH;
-      centerPlacements(pl,zbW,zbH);
-      candidates.push({name:'Zone Split (rotated)',placed:pl,unplaced:zr2.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
-    }
   }
 
   if(!candidates.length){el('layoutInfo').textContent='No pieces fit on stock.';return;}
