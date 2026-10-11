@@ -2057,9 +2057,11 @@ function drawPreview(){
   for(const p of sheet.placements){
     let px,py;
     if(viewSide==='back'){
-      const trimX=s.margin+p.x+p.bleed, trimY=s.margin+p.y+p.bleed;
-      if(s.flipAxis==='horizontal'){const backTrimY=s.stockH-trimY-p.trimH;px=trimX-p.bleed;py=backTrimY-p.bleed;}
-      else{const backTrimX=s.stockW-trimX-p.trimW;px=backTrimX-p.bleed;py=trimY-p.bleed;}
+      if(s.flipAxis==='horizontal'){
+        px=s.margin+p.x; py=s.stockH-s.margin-p.y-p.h;
+      }else{
+        px=s.stockW-s.margin-p.x-p.w; py=s.margin+p.y;
+      }
     }
     else{px=s.margin+p.x;py=s.margin+p.y;}
     const x=px*scale,y=py*scale,w=p.w*scale,h=p.h*scale;
@@ -2082,7 +2084,11 @@ function drawPreview(){
 
 function buildSlug(s,si,side){
   const p=[];if(s.jobName)p.push(s.jobName);if(s.jobNumber)p.push('#'+s.jobNumber);if(s.stockName)p.push(s.stockName);
-  if(s.doubleSided)p.push(side+' -- Flip '+s.flipAxis);
+  if(s.doubleSided){
+    const isLandscape=s.stockW>s.stockH;
+    const isTumble=isLandscape?(s.flipAxis==='vertical'):(s.flipAxis==='horizontal');
+    p.push(side+' -- '+(isTumble?'Tumble':'Turn'));
+  }
   const pq=sheets[si]?sheets[si].printQty||1:sheetPrintQty;
   p.push('Print '+pq+' times');
   if(sheets.length>1)p.push('Sheet '+(si+1)+' of '+sheets.length);
@@ -2149,7 +2155,7 @@ async function exportPrintPDF(){
             }
           }
         }
-        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back');}
+        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back',{skipRegDots:true});}
       }
     }
     download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_Print.pdf');
@@ -2170,36 +2176,39 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
       const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
       drawItem(page,c,x,y,p,Wp,Hp);
     }else{
-      // Back side: reposition for flip (no content mirroring — physical sheet flip handles that)
-      const trimX=(s.margin+p.x+p.bleed)*PTS, trimY=(s.margin+p.y+p.bleed)*PTS;
-      const trimW=p.trimW*PTS, trimH=p.trimH*PTS;
+      // Back side: mirror position along flip axis.
+      // TB (horizontal): Y-mirrored position + 180° content rotation
+      // LR (vertical):   X-mirrored position, no content transform
       let bx,by;
       if(s.flipAxis==='horizontal'){
-        // Top/Bottom flip: trim X stays, trim Y mirrors
-        const backTrimY=Hp-trimY-trimH;
-        bx=trimX-p.bleed*PTS; by=backTrimY-p.bleed*PTS;
+        bx=(s.margin+p.x)*PTS;
+        by=(s.margin+p.y)*PTS;
       }else{
-        // Left/Right flip: trim X mirrors, trim Y stays
-        const backTrimX=Wp-trimX-trimW;
-        bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
+        bx=Wp-(s.margin+p.x+p.w)*PTS;
+        by=Hp-(s.margin+p.y+p.h)*PTS;
       }
-      // Back-side content rotation rule for double-sided work-and-turn / work-and-tumble:
-      // When the physical sheet is flipped, the "top" of each piece must still align.
-      // - Top/Bottom flip (horizontal): reverses vertical → non-rotated items need 180°
-      // - Left/Right flip (vertical): reverses horizontal → rotated-for-yield items need 180°
-      const rotate180 = (s.flipAxis === 'horizontal') ? !p.rotated : !!p.rotated;
-      drawItem(page,c,bx,by,p,Wp,Hp,rotate180);
+      drawItem(page,c,bx,by,p,Wp,Hp,false,true,s.flipAxis);
     }
   }
 }
 
-function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
+function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
   const w=p.w*PTS,h=p.h*PTS;
   // Clip to the user's bleed box (trim + user bleed on each side)
   page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
-  // 180° rotation for back side with top/bottom flip (work-and-tumble):
-  // content must be printed upside-down so it reads right-side-up when
-  // the physical sheet is flipped top-to-bottom.
+
+  // Back-side content: North model — tops of files always point to North on both sides.
+  // For top/bottom (horizontal) flip: North moves to opposite side → 180° rotation to point North again.
+  // For left/right (vertical) flip: North stays at top → no content transform, just X-mirrored position.
+  if(isBack){
+    if(flipAxis==='horizontal'){
+      page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, x+w, y+h));
+    }else{
+      // LR: no content transform — right-reading at X-mirrored position
+    }
+  }
+
+  // Legacy 180° rotation (kept for compatibility, not used in new back-side path)
   if(rotate180){
     page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, 2*x+w, 2*y+h));
   }
@@ -2208,7 +2217,6 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
   if(p.enlargeBleed){
     if(p.rotated){
       page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h));
-      // Draw source at enlarged dims (h wide × w tall in the rotated coord space)
       if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:h,height:w});
       else page.drawImage(c.ref,{x:0,y:0,width:h,height:w});
     } else {
@@ -2220,18 +2228,31 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
     const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
     // Offset to align trim: source bleed may differ from user bleed
     const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
-    const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
     if(p.rotated){
-      // Draw at native source dimensions — the CTM rotation handles the orientation
-      // swap. Passing swapped dims causes non-uniform scaling (scrunching).
       const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
-      const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
-      page.pushOperators(
-        PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy),
-      );
-      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
-      else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+      if(isBack && flipAxis==='horizontal'){
+        // 180° CTM already applied above — 90° CW offset must account
+        // for the flipped coordinate system. Combined 180°+90°CW:
+        // source (0,0)→(x+w, y) top-left, (rSrcW,rSrcH)→(x, y+h) bottom-right
+        // when rox = srcBl-usrBl, roy = h-(srcBl-usrBl).
+        const rox=srcBl-usrBl, roy=h-(srcBl-usrBl);
+        page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy));
+        if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+        else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+      } else {
+        const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
+        page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy));
+        if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+        else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+      }
+    } else if(isBack && flipAxis==='horizontal'){
+      // 180° CTM already applied — draw at (0,0) in the rotated coordinate space
+      // CTM maps (0,0)→(x+w, y+h), so draw at (0,0) with srcW×srcH fills the clip
+      const ox=srcBl-usrBl; // offset to align trim within bleed
+      if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
+      else page.drawImage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
     } else {
+      const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
       if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
       else page.drawImage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
     }
@@ -2244,8 +2265,8 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
   const doSlug=!(opts&&opts.skipSlug)&&el('includeSlug').checked;
   const doHickeys=!(opts&&opts.skipHickeys)&&el('includeHickeys').checked;
 
-  // Reg dots are drawn ABOVE all layers — not clipped by safe area
-  if(!(opts&&opts.skipRegDots)) for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+  // Reg dots only on face side — not on back
+  if(!(opts&&opts.skipRegDots)&&sideLabel!=='Back') for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
 
   // Hickeys and slug are clipped to the margin strip (outside content+bleed area)
   // Using even-odd rule: full page rect + inner content rect = margin strip only
@@ -2519,7 +2540,7 @@ async function exportPrintDiePDF(){
       placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
       placeMarks(fp,s,Wp,Hp,fontB,si,'Face',markOpts);
       // Add die lines for placements without existing die paths
-      addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName);
+      addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
 
       if(s.doubleSided){
         let needsBack=true;
@@ -2538,7 +2559,8 @@ async function exportPrintDiePDF(){
         if(needsBack){
           const bp=outDoc.addPage([Wp,Hp]);
           placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
-          placeMarks(bp,s,Wp,Hp,fontB,si,'Back',markOpts);
+          placeMarks(bp,s,Wp,Hp,fontB,si,'Back',Object.assign({skipRegDots:true},markOpts));
+          // Die lines only on face — no die on back side
         }
       }
     }
@@ -2547,13 +2569,9 @@ async function exportPrintDiePDF(){
   btn.disabled=false;btn.textContent='Download Print+Die PDF';
 }
 
-function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieName){
-  // For placements WITHOUT die paths, add a perimeter rectangle in spot color
-  const needsDie = sheet.placements.filter(p => !p.diePaths || !p.diePaths.paths || !p.diePaths.paths.length);
-  console.log('addDieLinesToPage:', sheet.placements.length, 'placements,', needsDie.length, 'need die.',
-    sheet.placements.map(p => p.label + ': diePaths=' + (p.diePaths ? p.diePaths.paths.length + ' paths' : 'null')));
-  if(!needsDie.length) return;
-
+function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieName, side, flipAxis){
+  side = side || 'face';
+  flipAxis = flipAxis || 'horizontal';
   // Add spot color to page resources
   const pageDict = page.node;
   let resources = pageDict.get(PDFLib.PDFName.of('Resources'));
@@ -2568,37 +2586,71 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
   csDict.set(PDFLib.PDFName.of(csAlias), csRef);
 
   const inset = s.inset || 0;
-  // Build content stream for die rectangles
   let cutOps = '';
-  for(const p of needsDie){
-    // If source has no bleed (srcBleed=0), die goes at the full image perimeter
-    // If source has bleed, die goes at the trim position (inside the bleed)
+
+  // For the back side, we mirror the ENTIRE sheet along the flip axis.
+  // This mirrors both die positions AND die shapes in one operation.
+  // So we build all die ops using FACE coordinates, then wrap the whole
+  // thing in a mirror CTM for the back.
+  if(side === 'back'){
+    if(flipAxis === 'horizontal'){
+      cutOps += `q 1 0 0 -1 0 ${Hp.toFixed(4)} cm\n`;
+    } else {
+      cutOps += `q -1 0 0 1 ${Wp.toFixed(4)} 0 cm\n`;
+    }
+  }
+
+  for(const p of sheet.placements){
+    // Die position in FACE coordinates (bottom-left origin)
     const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
     const hasSrcBleed = srcBl > 0.001;
     let dieX, dieY, dieW, dieH;
     if(hasSrcBleed){
-      // Die at trim position
       dieX = (s.margin + p.x + p.bleed) * PTS;
       dieY = Hp - (s.margin + p.y + p.bleed + p.trimH) * PTS;
       dieW = p.trimW * PTS;
       dieH = p.trimH * PTS;
     } else {
-      // No source bleed — die at full image edge (physW × physH)
       dieX = (s.margin + p.x) * PTS;
       dieY = Hp - (s.margin + p.y + p.h) * PTS;
       dieW = p.w * PTS;
       dieH = p.h * PTS;
     }
-    // Apply inset — move die inward
     if(inset > 0){
       dieX += inset * PTS;
       dieY += inset * PTS;
       dieW -= 2 * inset * PTS;
       dieH -= 2 * inset * PTS;
     }
-    if(dieW > 0 && dieH > 0)
-    cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
+
+    if(p.diePaths && p.diePaths.paths && p.diePaths.paths.length){
+      // Extracted die paths — translate to imposed position (face coords)
+      const srcW = p.diePaths.pageW, srcH = p.diePaths.pageH;
+      let effSrcW = srcW, effSrcH = srcH;
+      if(p.rotated){ effSrcW = srcH; effSrcH = srcW; }
+      const scaleX = dieW / effSrcW, scaleY = dieH / effSrcH;
+      for(const path of p.diePaths.paths){
+        const translated = translateDiePath(path, dieX, dieY, scaleX, scaleY, effSrcH, dieH, p.rotated, srcW);
+        cutOps += `q /${csAlias} CS 1 SCN ${(path.width * Math.min(scaleX, scaleY) || 2.835).toFixed(4)} w\n`;
+        for(const op of translated.ops){
+          if(op.op === 'm') cutOps += `${op.x.toFixed(4)} ${op.y.toFixed(4)} m\n`;
+          else if(op.op === 'l') cutOps += `${op.x.toFixed(4)} ${op.y.toFixed(4)} l\n`;
+          else if(op.op === 'c') cutOps += `${op.x1.toFixed(4)} ${op.y1.toFixed(4)} ${op.x2.toFixed(4)} ${op.y2.toFixed(4)} ${op.x3.toFixed(4)} ${op.y3.toFixed(4)} c\n`;
+          else if(op.op === 'h') cutOps += 'h\n';
+          else if(op.op === 're') cutOps += `${op.x.toFixed(4)} ${op.y.toFixed(4)} ${op.w.toFixed(4)} ${op.h.toFixed(4)} re\n`;
+        }
+        cutOps += 'S Q\n';
+      }
+    } else {
+      // No extracted die paths — rectangle die in face coords
+      if(dieW > 0 && dieH > 0)
+        cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
+    }
   }
+
+  // Close the mirror CTM for back side
+  if(side === 'back') cutOps += 'Q\n';
+  if(!cutOps || cutOps === 'Q\n') return;
 
   // Append as new content stream
   const streamBytes = new TextEncoder().encode(cutOps);
