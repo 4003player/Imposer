@@ -749,7 +749,7 @@ async function parsePDF(bytes,name){
     if(hasTrim){trimW=tb.width/PTS;trimH=tb.height/PTS;physW=mb.width/PTS;physH=mb.height/PTS;bleed=Math.max(0,Math.min((physW-trimW)/2,(physH-trimH)/2));}
     else{physW=mb.width/PTS;physH=mb.height/PTS;trimW=physW;trimH=physH;bleed=0;}
     const userBl=s.rasterBleed;
-    const srcW=physW, srcH=physH, srcBleed=bleed;
+    let srcW=physW, srcH=physH, srcBleed=bleed;
     if(userBl>0&&hasTrim){bleed=userBl;physW=trimW+2*userBl;physH=trimH+2*userBl;}
     // Extract all spot colors from the page
     const spotColors = extractAllSpotColors(bytes, doc, i, rawSpotMap);
@@ -761,11 +761,9 @@ async function parsePDF(bytes,name){
     const allDieCS = [...new Set([...knownDieCS, ...spotColors
       .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
       .map(sc => sc.spotName)])];
-    let diePaths = allDieCS.length > 0 ? extractPathsForCS(bytes, doc, i, mb.width, mb.height, allDieCS) : null;
+    let diePaths = allDieCS.length > 0 ? await extractPathsForCS(bytes, doc, i, mb.width, mb.height, allDieCS) : null;
     // If extraction failed but we KNOW die spots exist in the file, mark as present
-    // (the embedded page XObject already contains the die paths — we just can't parse them)
     if(!diePaths && allDieCS.length > 0) diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:mb.width, pageH:mb.height};
-    console.log('parsePDF page', i, 'spotColors:', spotColors.map(s=>s.spotName+'/'+s.csName), 'allDieCS:', allDieCS, 'diePaths:', diePaths ? diePaths.paths.length+' paths' : 'null');
     entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,spotColors,
       srcW,srcH,srcBleed,
       qty:s.masterQty,qtyOverride:false,orient:s.masterOrient,orientOverride:false,
@@ -866,8 +864,36 @@ function extractAllSpotColors(pdfBytes, doc, pageIdx, rawSpotMap){
   return spots;
 }
 
+/* Decompress a FlateDecode PDF stream using browser DecompressionStream */
+async function decompressPdfStream(compressed){
+  if(!compressed || !compressed.length) return null;
+  // Try 'deflate' (zlib format) first, then 'deflate-raw' (no zlib header)
+  for(const fmt of ['deflate', 'deflate-raw']){
+    try {
+      const ds = new DecompressionStream(fmt);
+      const writer = ds.writable.getWriter();
+      writer.write(compressed);
+      writer.close();
+      const reader = ds.readable.getReader();
+      const chunks = [];
+      let done = false;
+      while(!done){
+        const r = await reader.read();
+        if(r.done){done = true; break;}
+        chunks.push(r.value);
+      }
+      const totalLen = chunks.reduce((s,c)=>s+c.length, 0);
+      const decompressed = new Uint8Array(totalLen);
+      let off = 0;
+      for(const c of chunks){ decompressed.set(c, off); off += c.length; }
+      return new TextDecoder('latin1').decode(decompressed);
+    } catch(e) { /* try next format */ }
+  }
+  return null;
+}
+
 /* === DIE LINE EXTRACTION === */
-function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
+async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
   if(!csNames || !csNames.length) return null;
   function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
   const pg = doc.getPages()[pageIdx];
@@ -893,15 +919,39 @@ function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
     }
     const parts = [];
     for(const s of streams){
-      // Try multiple methods to get decoded content
+      // Check if this stream has a /Filter
+      let hasFilter = false;
+      try {
+        if(s.dict){
+          const filterVal = s.dict.get(PDFLib.PDFName.of('Filter'));
+          if(filterVal) hasFilter = true;
+        }
+      } catch(e) {}
+      
       let bytes = null;
-      if(s.getUnencodedContents) bytes = s.getUnencodedContents();
-      else if(s.getContents) bytes = s.getContents();
-      else if(s.contents) bytes = s.contents;
-      if(bytes) parts.push(new TextDecoder('latin1').decode(bytes));
+      let text = null;
+      if(s.getUnencodedContents){
+        bytes = s.getUnencodedContents();
+        text = new TextDecoder('latin1').decode(bytes);
+      } else if(s.getContents){
+        bytes = s.getContents();
+        if(hasFilter){
+          text = await decompressPdfStream(bytes);
+        } else {
+          text = new TextDecoder('latin1').decode(bytes);
+        }
+      } else if(s.contents){
+        bytes = s.contents;
+        if(hasFilter){
+          text = await decompressPdfStream(bytes);
+        } else {
+          text = new TextDecoder('latin1').decode(bytes);
+        }
+      }
+      if(text) parts.push(text);
     }
     contentStr = parts.join('\n');
-  } catch(e){ return null; }
+  } catch(e){ console.error('extractPathsForCS: error getting content:', e); return null; }
   
   if(!contentStr) return null;
   
@@ -912,31 +962,61 @@ function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
   let inDiePath = false;
   let currentPath = [];
   let lineWidth = 2.835; // default
+  let qDepth = 0; // track q/Q nesting inside die path section
   
   for(const line of lines){
     const trimmed = line.trim();
     
     // Check for CS switch to die line
-    for(const csName of dieCSNames){
-      if(trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
-         trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')){
-        inDiePath = true;
-        currentPath = [];
-        break;
+    if(!inDiePath){
+      for(const csName of dieCSNames){
+        if(trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
+           trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')){
+          inDiePath = true;
+          currentPath = [];
+          qDepth = 0;
+          break;
+        }
       }
+      if(!inDiePath) continue;
     }
     
-    // Check for CS switch away from die line, or end of marked content
+    // We're inside a die path section
     if(inDiePath){
-      if((trimmed.includes(' CS ') && !dieCSNames.some(n => trimmed.includes('/'+n))) ||
-         trimmed === 'EMC' || trimmed === 'Q'){
-        // If we have a path, save it
-        if(currentPath.length > 0){
-          paths.push({ops: [...currentPath], width: lineWidth});
-        }
-        inDiePath = false;
-        currentPath = [];
+      // Check for CS switch away from die line
+      if(trimmed.includes(' CS ') && !dieCSNames.some(n => trimmed.includes('/'+n))){
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+        inDiePath = false; currentPath = []; continue;
+      }
+      
+      // Track q/Q nesting — only exit on outermost Q (the one that was open before die mode)
+      // Detect both bare 'q' and 'q a b c d e f cm' (transform inside save)
+      if(trimmed === 'q'){
+        qDepth++;
         continue;
+      }
+      const qcmMatch = trimmed.match(/^q\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(qcmMatch){
+        qDepth++;
+        currentPath.push({op:'cm', a:parseFloat(qcmMatch[1]),b:parseFloat(qcmMatch[2]),
+          c:parseFloat(qcmMatch[3]),d:parseFloat(qcmMatch[4]),
+          e:parseFloat(qcmMatch[5]),f:parseFloat(qcmMatch[6])});
+        continue;
+      }
+      if(trimmed === 'Q'){
+        qDepth--;
+        if(qDepth < 0){
+          // Outermost Q (the one from before die mode) — end of die path section
+          if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+          inDiePath = false; currentPath = []; qDepth = 0;
+          continue;
+        }
+        // Inner Q — just skip (transform context restored)
+        continue;
+      }
+      if(trimmed === 'EMC'){
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+        inDiePath = false; currentPath = []; qDepth = 0; continue;
       }
       
       // Parse width
@@ -944,8 +1024,8 @@ function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
       if(wMatch) { lineWidth = parseFloat(wMatch[1]); continue; }
       
       // Parse path operators
-      // m = moveto, l = lineto, c = curveto, h = closepath, re = rect
-      // S = stroke, f = fill, B = both
+      // m = moveto, l = lineto, c = curveto (6 coords), v/y = shorthand curveto (2 coords each)
+      // h = closepath, re = rect, S = stroke, f = fill, B = both
       const mMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+m\s*$/);
       if(mMatch){ currentPath.push({op:'m', x:parseFloat(mMatch[1]), y:parseFloat(mMatch[2])}); continue; }
       
@@ -957,6 +1037,16 @@ function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
         x2:parseFloat(cMatch[3]),y2:parseFloat(cMatch[4]),
         x3:parseFloat(cMatch[5]),y3:parseFloat(cMatch[6])}); continue; }
       
+      // v = shorthand curveto: x2 y2 x3 y3 v → cp1=current, cp2=(x2,y2), end=(x3,y3)
+      const vMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+v\s*$/);
+      if(vMatch){ currentPath.push({op:'v', x2:parseFloat(vMatch[1]), y2:parseFloat(vMatch[2]),
+        x3:parseFloat(vMatch[3]), y3:parseFloat(vMatch[4])}); continue; }
+      
+      // y = shorthand curveto: x1 y1 x3 y3 y → cp1=(x1,y1), cp2=(x3,y3), end=(x3,y3)
+      const yMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+y\s*$/);
+      if(yMatch){ currentPath.push({op:'y', x1:parseFloat(yMatch[1]), y1:parseFloat(yMatch[2]),
+        x3:parseFloat(yMatch[3]), y3:parseFloat(yMatch[4])}); continue; }
+      
       if(trimmed === 'h'){ currentPath.push({op:'h'}); continue; }
       
       const reMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+re\s*$/);
@@ -965,19 +1055,10 @@ function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
       
       if(trimmed === 'S' || trimmed === 'f' || trimmed === 'B'){
         if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
-        currentPath = [];
-        continue;
+        currentPath = []; continue;
       }
       
-      // Handle cm (transform) — apply to subsequent coordinates
-      const cmMatch = trimmed.match(/^q\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
-      if(cmMatch){
-        currentPath.push({op:'cm', a:parseFloat(cmMatch[1]),b:parseFloat(cmMatch[2]),
-          c:parseFloat(cmMatch[3]),d:parseFloat(cmMatch[4]),
-          e:parseFloat(cmMatch[5]),f:parseFloat(cmMatch[6])});
-        continue;
-      }
-      // Bare cm without q
+      // Handle bare cm (without q prefix)
       const cmMatch2 = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
       if(cmMatch2){
         currentPath.push({op:'cm', a:parseFloat(cmMatch2[1]),b:parseFloat(cmMatch2[2]),
@@ -989,7 +1070,77 @@ function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
   // Catch any remaining path
   if(inDiePath && currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
   
-  return paths.length > 0 ? {paths, pageW, pageH} : null;
+  // Filter out paths that are entirely outside the page bounds (pasteboard art)
+  // Illustrator draws die paths on the pasteboard outside the art board.
+  // The clip rect makes them invisible, but we extract them anyway.
+  // Filter by checking if the path's bounding box (after cm offset) overlaps the page.
+  const filtered = paths.filter(path => {
+    const cmOp = path.ops.find(op => op.op === 'cm');
+    if(!cmOp) return true; // No cm — keep it
+    
+    // Only handle identity cm (a=1,b=0,c=0,d=1) — just a translation
+    if(cmOp.a !== 1 || cmOp.b !== 0 || cmOp.c !== 0 || cmOp.d !== 1) return true;
+    
+    const cmE = cmOp.e, cmF = cmOp.f;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    
+    for(const op of path.ops){
+      let lx = 0, ly = 0;
+      if(op.op === 'm' || op.op === 'l'){ lx = op.x; ly = op.y; }
+      else if(op.op === 'c'){ lx = op.x3; ly = op.y3; }
+      else if(op.op === 'v'){ lx = op.x3; ly = op.y3; }
+      else if(op.op === 'y'){ lx = op.x3; ly = op.y3; }
+      else if(op.op === 're'){ lx = op.x + op.w; ly = op.y + op.h; }
+      else continue;
+      
+      const px = lx + cmE;
+      const py = ly + cmF;
+      minX = Math.min(minX, px);
+      maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py);
+      maxY = Math.max(maxY, py);
+    }
+    
+    // Also include the cm offset point itself
+    minX = Math.min(minX, cmE);
+    maxX = Math.max(maxX, cmE);
+    minY = Math.min(minY, cmF);
+    maxY = Math.max(maxY, cmF);
+    
+    // Check if bbox overlaps the page (with tolerance)
+    const tol = 1;
+    if(maxX < -tol || minX > pageW + tol || maxY < -tol || minY > pageH + tol){
+      return false; // Path is entirely outside the page — discard
+    }
+    return true;
+  });
+  
+  return filtered.length > 0 ? {paths: filtered, pageW, pageH} : null;
+}
+
+/* Compute the bounding box of all die paths in page coordinates (points) */
+function computeDieBBox(diePaths){
+  if(!diePaths || !diePaths.paths || !diePaths.paths.length) return null;
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  let curX=0, curY=0, cmTx=0, cmTy=0;
+  for(const path of diePaths.paths){
+    curX=0; curY=0; cmTx=0; cmTy=0;
+    for(const op of path.ops){
+      if(op.op==='cm'){ cmTx=op.e; cmTy=op.f; continue; }
+      if(op.op==='m'){ curX=op.x+cmTx; curY=op.y+cmTy; addPt(curX,curY); }
+      else if(op.op==='l'){ curX=op.x+cmTx; curY=op.y+cmTy; addPt(curX,curY); }
+      else if(op.op==='c'){ curX=op.x3+cmTx; curY=op.y3+cmTy; addPt(op.x1+cmTx,op.y1+cmTy); addPt(op.x2+cmTx,op.y2+cmTy); addPt(curX,curY); }
+      else if(op.op==='v'){ curX=op.x3+cmTx; curY=op.y3+cmTy; addPt(op.x2+cmTx,op.y2+cmTy); addPt(curX,curY); }
+      else if(op.op==='y'){ curX=op.x3+cmTx; curY=op.y3+cmTy; addPt(op.x1+cmTx,op.y1+cmTy); addPt(curX,curY); }
+      else if(op.op==='re'){ addPt(op.x+cmTx,op.y+cmTy); addPt(op.x+op.w+cmTx,op.y+op.h+cmTy); }
+      // h = closepath, no new points
+    }
+  }
+  function addPt(x,y){
+    if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;
+  }
+  if(minX===Infinity) return null;
+  return {minX, minY, maxX, maxY, width:maxX-minX, height:maxY-minY};
 }
 
 async function parseTiff(bytes,name){
@@ -2096,6 +2247,144 @@ function findBackSource(p){
   return null;
 }
 
+/* === DIE STRIPPING (for Print PDF — remove die spots so Caldera doesn't generate cut marks) === */
+// Loads PDF with pdf-lib, decompresses content streams (or uses raw if no filter),
+// removes die-drawing sections, recompresses, saves. Returns Uint8Array or null.
+async function stripDieFromPdfDoc(pdfBytes, dieCSNames){
+  if(!dieCSNames || !dieCSNames.length) return null;
+  try {
+    const doc = await PDFLib.PDFDocument.load(pdfBytes, {ignoreEncryption:true});
+    const pages = doc.getPages();
+    let anyModified = false;
+    
+    for(let pi=0; pi<pages.length; pi++){
+      const node = pages[pi].node;
+      const contentsRef = node.get(PDFLib.PDFName.of('Contents'));
+      if(!contentsRef) continue;
+      
+      let streams = [];
+      const contents = doc.context.lookup(contentsRef);
+      if(contents instanceof PDFLib.PDFArray){
+        for(let i=0;i<contents.size();i++){
+          const s = doc.context.lookup(contents.get(i));
+          if(s) streams.push(s);
+        }
+      } else {
+        streams.push(contents);
+      }
+      
+      for(const s of streams){
+        let compressedBytes = null;
+        if(s.getContents) compressedBytes = s.getContents();
+        else if(s.contents) compressedBytes = s.contents;
+        else if(s.getUnencodedContents) compressedBytes = s.getUnencodedContents();
+        if(!compressedBytes) continue;
+        
+        // Check if this stream has a /Filter
+        let hasFilter = false;
+        try {
+          if(s.dict){
+            const filterVal = s.dict.get(PDFLib.PDFName.of('Filter'));
+            if(filterVal) hasFilter = true;
+          }
+        } catch(e) {}
+        
+        // Get text: decompress or use raw
+        let text;
+        if(hasFilter){
+          // decompressPdfStream returns a string already
+          text = await decompressPdfStream(compressedBytes);
+          if(!text) continue;
+        } else {
+          text = new TextDecoder('latin1').decode(compressedBytes);
+        }
+        
+        // Check if this stream contains die CS references
+        let hasDie = dieCSNames.some(n => text.includes('/'+n));
+        if(!hasDie) continue;
+        
+        // Strip die sections: remove from /CSn CS to the outermost Q
+        for(const csName of dieCSNames){
+          const csMarker = '/' + csName + ' CS';
+          let idx = text.indexOf(csMarker);
+          while(idx >= 0){
+            // Find the outer Q by counting q/Q depth from the CS marker
+            let qDepth = 0;
+            let endPos = -1;
+            for(let i = idx; i < text.length; i++){
+              if(text[i] === 'q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
+                qDepth++;
+              } else if(text[i] === 'Q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
+                qDepth--;
+                if(qDepth < 0){ endPos = i + 1; break; }
+              }
+            }
+            if(endPos > 0){
+              // Also remove preceding 'q\n...W n\n' that's part of the die block
+              let clipStart = idx;
+              const beforeCS = text.substring(0, idx);
+              const wIdx = beforeCS.lastIndexOf('W n');
+              if(wIdx >= 0){
+                const qIdx = beforeCS.lastIndexOf('q', wIdx);
+                if(qIdx >= 0 && qIdx > beforeCS.lastIndexOf('Q', wIdx)){
+                  clipStart = qIdx;
+                }
+              }
+              text = text.substring(0, clipStart) + text.substring(endPos);
+            } else {
+              text = text.substring(0, idx);
+            }
+            idx = text.indexOf(csMarker);
+          }
+        }
+        
+        // Recompress (or use raw if no filter)
+        const cleanedBytes = new TextEncoder().encode(text);
+        if(hasFilter){
+          const recompressed = await compressStream(cleanedBytes);
+          if(!recompressed) continue;
+          if(s.contents !== undefined){ s.contents = recompressed; anyModified = true; }
+        } else {
+          if(s.contents !== undefined){ s.contents = cleanedBytes; anyModified = true; }
+        }
+      }
+    }
+    
+    if(!anyModified) return null;
+    const stripped = await doc.save({useObjectStreams:false});
+    return stripped;
+  } catch(e) {
+    console.warn('stripDieFromPdfDoc failed:', e);
+    return null;
+  }
+}
+
+// Compress using browser CompressionStream
+async function compressStream(bytes){
+  for(const fmt of ['deflate', 'deflate-raw']){
+    try {
+      const cs = new CompressionStream(fmt);
+      const writer = cs.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+      const reader = cs.readable.getReader();
+      const chunks = [];
+      let done = false;
+      while(!done){
+        const r = await reader.read();
+        if(r.done){ done = true; break; }
+        chunks.push(r.value);
+      }
+      const total = chunks.reduce((s,c)=>s+c.length, 0);
+      const result = new Uint8Array(total);
+      let off = 0;
+      for(const c of chunks){ result.set(c, off); off += c.length; }
+      return result;
+    } catch(e) {}
+  }
+  return null;
+}
+
 /* === EXPORT PRINT PDF === */
 async function exportPrintPDF(){
   const btn=el('printBtn');btn.disabled=true;btn.textContent='Building...';
@@ -2109,7 +2398,24 @@ async function exportPrintPDF(){
     const cache=new Map(),used=new Set();
     for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
     for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
-      if(f.type==='pdf'){const sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}}
+      if(f.type==='pdf'){
+        // Collect die CS names from pages that have die paths
+        const dieCSNames = [];
+        for(const pi of pis){const pg=f.pages[pi];if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())&&!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);}}}
+        let sd;
+        if(dieCSNames.length>0){
+          // Strip die from Print PDF so Caldera doesn't generate cut marks
+          const strippedBytes=await stripDieFromPdfDoc(f.bytes,dieCSNames);
+          if(strippedBytes){
+            sd=await PDFLib.PDFDocument.load(strippedBytes,{ignoreEncryption:true});
+          } else {
+            sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+          }
+        } else {
+          sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+        }
+        for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+      }
       else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
     // Embed common back if needed
     let commonEmbed=null;
@@ -2121,20 +2427,13 @@ async function exportPrintPDF(){
       const sheet=sheets[si];
       const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
       if(s.doubleSided){
-        // For "same" mode, check if layout is symmetric across flip axis — if so, skip back page
+        // For "same" mode, always generate a back page — the back uses the same art
+        // but positioned for the other side of the sheet (flipped), so it's never redundant.
         let needsBack=true;
         if(s.dblMode==='same'){
-          const pl=sheet.placements, cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
-          const allSameContent=pl.every(p=>p.fileId===pl[0].fileId&&p.pageIndex===pl[0].pageIndex);
-          if(allSameContent){
-            // All same content — check positional symmetry across flip axis
-            const tol=0.1;
-            if(s.flipAxis==='horizontal'){
-              needsBack=!pl.every(p=>{const trimY=p.y+p.bleed;const mirrorY=cH-trimY-p.trimH;return pl.some(q=>Math.abs((q.y+q.bleed)-mirrorY)<tol&&Math.abs((q.x+q.bleed)-(p.x+p.bleed))<tol);});
-            }else{
-              needsBack=!pl.every(p=>{const trimX=p.x+p.bleed;const mirrorX=cW-trimX-p.trimW;return pl.some(q=>Math.abs((q.x+q.bleed)-mirrorX)<tol&&Math.abs((q.y+q.bleed)-(p.y+p.bleed))<tol);});
-            }
-          }
+          // Always need back in "same" mode — the back is the same art flipped,
+          // not a mirror copy of the face layout.
+          needsBack=true;
         }
         if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back',{skipRegDots:true});}
       }
@@ -2217,7 +2516,8 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
     } else if(isBack && flipAxis==='horizontal'){
       // 180° CTM already applied — draw at (0,0) in the rotated coordinate space
       // CTM maps (0,0)→(x+w, y+h), so draw at (0,0) with srcW×srcH fills the clip
-      const ox=srcBl-usrBl; // offset to align trim within bleed
+      // The bleed offset must be NEGATIVE in the flipped space (180° rotation inverts it)
+      const ox=-(srcBl-usrBl); // offset to align trim within bleed (negated for 180° CTM)
       if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
       else page.drawImage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
     } else {
@@ -2390,11 +2690,11 @@ function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, ro
   // When rotated: apply 90° CW rotation (x,y) → (y, origSrcW - x) before scaling
   const ops = [];
   let cmTx=0, cmTy=0; // current transform offset from cm operators
+  let curX=0, curY=0; // current point (for v/y shorthand expansion)
   
   function tx(x,y){
     let rx=x+cmTx, ry=y+cmTy;
     if(rotated){
-      // 90° CW rotation in source coords: new_x = old_y, new_y = origSrcW - old_x
       const tmp=rx; rx=ry; ry=origSrcW-tmp;
     }
     return { x: rx*scaleX+offsetX, y: ry*scaleY+offsetY };
@@ -2407,18 +2707,30 @@ function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, ro
     }
     if(op.op==='m'){
       const t=tx(op.x,op.y);
+      curX=op.x; curY=op.y;
       ops.push({op:'m', x:t.x, y:t.y});
     } else if(op.op==='l'){
       const t=tx(op.x,op.y);
+      curX=op.x; curY=op.y;
       ops.push({op:'l', x:t.x, y:t.y});
     } else if(op.op==='c'){
       const t1=tx(op.x1,op.y1), t2=tx(op.x2,op.y2), t3=tx(op.x3,op.y3);
+      curX=op.x3; curY=op.y3;
       ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+    } else if(op.op==='v'){
+      // v: x2 y2 x3 y3 v → cp1=current, cp2=(x2,y2), end=(x3,y3)
+      const t1=tx(curX, curY), t2=tx(op.x2, op.y2), t3=tx(op.x3, op.y3);
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+      curX=op.x3; curY=op.y3;
+    } else if(op.op==='y'){
+      // y: x1 y1 x3 y3 y → cp1=(x1,y1), cp2=(x3,y3), end=(x3,y3)
+      const t1=tx(op.x1, op.y1), t2=tx(op.x3, op.y3), t3=tx(op.x3, op.y3);
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+      curX=op.x3; curY=op.y3;
     } else if(op.op==='h'){
       ops.push({op:'h'});
     } else if(op.op==='re'){
       if(rotated){
-        // Rectangle: rotate all 4 corners and emit as m/l/h
         const p1=tx(op.x,op.y), p2=tx(op.x+op.w,op.y), p3=tx(op.x+op.w,op.y+op.h), p4=tx(op.x,op.y+op.h);
         ops.push({op:'m',x:p1.x,y:p1.y},{op:'l',x:p2.x,y:p2.y},{op:'l',x:p3.x,y:p3.y},{op:'l',x:p4.x,y:p4.y},{op:'h'});
       } else {
@@ -2518,18 +2830,10 @@ async function exportPrintDiePDF(){
       addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
 
       if(s.doubleSided){
+        // For "same" mode, always generate a back page
         let needsBack=true;
         if(s.dblMode==='same'){
-          const pl=sheet.placements, cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
-          const allSameContent=pl.every(p=>p.fileId===pl[0].fileId&&p.pageIndex===pl[0].pageIndex);
-          if(allSameContent){
-            const tol=0.1;
-            if(s.flipAxis==='horizontal'){
-              needsBack=!pl.every(p=>{const trimY=p.y+p.bleed;const mirrorY=cH-trimY-p.trimH;return pl.some(q=>Math.abs((q.y+q.bleed)-mirrorY)<tol&&Math.abs((q.x+q.bleed)-(p.x+p.bleed))<tol);});
-            }else{
-              needsBack=!pl.every(p=>{const trimX=p.x+p.bleed;const mirrorX=cW-trimX-p.trimW;return pl.some(q=>Math.abs((q.x+q.bleed)-mirrorX)<tol&&Math.abs((q.y+q.bleed)-(p.y+p.bleed))<tol);});
-            }
-          }
+          needsBack=true;
         }
         if(needsBack){
           const bp=outDoc.addPage([Wp,Hp]);
@@ -2577,20 +2881,13 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
 
   for(const p of sheet.placements){
     // Die position in FACE coordinates (bottom-left origin)
-    const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
-    const hasSrcBleed = srcBl > 0.001;
+    // Use the FULL placement area (including bleed), not just the trim area,
+    // because the die paths span the full source page.
     let dieX, dieY, dieW, dieH;
-    if(hasSrcBleed){
-      dieX = (s.margin + p.x + p.bleed) * PTS;
-      dieY = Hp - (s.margin + p.y + p.bleed + p.trimH) * PTS;
-      dieW = p.trimW * PTS;
-      dieH = p.trimH * PTS;
-    } else {
-      dieX = (s.margin + p.x) * PTS;
-      dieY = Hp - (s.margin + p.y + p.h) * PTS;
-      dieW = p.w * PTS;
-      dieH = p.h * PTS;
-    }
+    dieX = (s.margin + p.x) * PTS;
+    dieY = Hp - (s.margin + p.y + p.h) * PTS;
+    dieW = p.w * PTS;
+    dieH = p.h * PTS;
     if(inset > 0){
       dieX += inset * PTS;
       dieY += inset * PTS;
@@ -2599,28 +2896,17 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
     }
 
     if(p.diePaths && p.diePaths.paths && p.diePaths.paths.length){
-      // Extracted die paths — translate to imposed position (face coords)
-      const srcW = p.diePaths.pageW, srcH = p.diePaths.pageH;
-      let effSrcW = srcW, effSrcH = srcH;
-      if(p.rotated){ effSrcW = srcH; effSrcH = srcW; }
-      const scaleX = dieW / effSrcW, scaleY = dieH / effSrcH;
-      for(const path of p.diePaths.paths){
-        const translated = translateDiePath(path, dieX, dieY, scaleX, scaleY, effSrcH, dieH, p.rotated, srcW);
-        cutOps += `q /${csAlias} CS 1 SCN ${(path.width * Math.min(scaleX, scaleY) || 2.835).toFixed(4)} w\n`;
-        for(const op of translated.ops){
-          if(op.op === 'm') cutOps += `${op.x.toFixed(4)} ${op.y.toFixed(4)} m\n`;
-          else if(op.op === 'l') cutOps += `${op.x.toFixed(4)} ${op.y.toFixed(4)} l\n`;
-          else if(op.op === 'c') cutOps += `${op.x1.toFixed(4)} ${op.y1.toFixed(4)} ${op.x2.toFixed(4)} ${op.y2.toFixed(4)} ${op.x3.toFixed(4)} ${op.y3.toFixed(4)} c\n`;
-          else if(op.op === 'h') cutOps += 'h\n';
-          else if(op.op === 're') cutOps += `${op.x.toFixed(4)} ${op.y.toFixed(4)} ${op.w.toFixed(4)} ${op.h.toFixed(4)} re\n`;
-        }
-        cutOps += 'S Q\n';
+      // File already has die paths embedded in the content — the original die is correct.
+      // Skip the overlay die — the original die from the source file is already in the right position.
+      // Only add overlay for the _marker case (extraction failed but die spots exist).
+      if(!p.diePaths.paths[0]._marker){
+        continue; // Skip — original die is already there
       }
-    } else {
-      // No extracted die paths — rectangle die in face coords
-      if(dieW > 0 && dieH > 0)
-        cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
+      // Marker case — extraction failed, fall through to rectangle die
     }
+    // No extracted die paths (or marker) — rectangle die in face coords
+    if(dieW > 0 && dieH > 0)
+      cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
   }
 
   // Close the mirror CTM for back side
