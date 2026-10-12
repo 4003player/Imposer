@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Die Stripper Test</title>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 40px 20px; }
+.container { max-width: 680px; margin: 0 auto; }
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+p.sub { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+.card { background: #fff; border-radius: 14px; padding: 24px 28px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.card h2 { font-size: 12px; font-weight: 600; color: #86868b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #f0f0f0; }
+.file-drop { border: 2px dashed #d2d2d7; border-radius: 14px; padding: 40px 24px; text-align: center; cursor: pointer; background: #fafafa; transition: all 0.2s; }
+.file-drop:hover, .file-drop.dragover { border-color: #0071e3; background: #f0f7ff; }
+.file-drop p { font-size: 15px; color: #6e6e73; margin-bottom: 4px; }
+.file-drop .sub { font-size: 12px; color: #aaa; }
+.file-drop input { display: none; }
+.info-box { background: #f0f7ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 10px 14px; margin-top: 12px; font-size: 13px; color: #1e40af; line-height: 1.7; }
+.btn { display: block; width: 100%; padding: 14px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: center; margin-top: 12px; }
+.btn-primary { background: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0077ed; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,113,227,0.3); }
+.btn-green { background: #34d399; color: #064e3b; }
+.btn-green:hover { background: #10b981; }
+.btn:disabled { background: #d2d2d7; color: #999; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-row { display: flex; gap: 12px; }
+.btn-row .btn { flex: 1; }
+.status { font-size: 13px; color: #0071e3; margin: 10px 0; text-align: center; font-weight: 500; }
+pre { background: #1d1d1f; color: #e8e8ed; border-radius: 10px; padding: 14px; font-size: 11px; overflow-x: auto; max-height: 240px; margin-top: 10px; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Die Stripper Test</h1>
+  <p class="sub">Load a PDF with CutContour die spots — strip die for clean CMYK art, extract die for cut file</p>
+
+  <div class="card">
+    <h2>Step 1: Load PDF</h2>
+    <div class="file-drop" id="dropZone">
+      <p>📄 Drop PDF here</p>
+      <p class="sub">.pdf only</p>
+      <input type="file" id="fileInput" accept=".pdf">
+    </div>
+    <div id="fileInfo"></div>
+  </div>
+
+  <div class="card" id="stripCard" style="display:none">
+    <h2>Step 2: Process</h2>
+    <div id="spotInfo"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="stripBtn">Download Stripped Art PDF</button>
+      <button class="btn btn-green" id="cutBtn">Download Cut PDF</button>
+    </div>
+    <div class="status" id="status"></div>
+    <pre id="log"></pre>
+  </div>
+</div>
+
+<script>
+function log(msg){
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+function el(id){ return document.getElementById(id); }
+function setStatus(s){ el('status').textContent = s; }
+
+// Decompress using browser DecompressionStream
+async function decompressStream(compressed){
+  for(const fmt of ['deflate', 'deflate-raw']){
+    try {
+      const ds = new DecompressionStream(fmt);
+      const writer = ds.writable.getWriter();
+      writer.write(compressed);
+      writer.close();
+      const reader = ds.readable.getReader();
+      const chunks = [];
+      let done = false;
+      while(!done){
+        const r = await reader.read();
+        if(r.done){ done = true; break; }
+        chunks.push(r.value);
+      }
+      const total = chunks.reduce((s,c)=>s+c.length, 0);
+      const result = new Uint8Array(total);
+      let off = 0;
+      for(const c of chunks){ result.set(c, off); off += c.length; }
+      return result;
+    } catch(e) {}
+  }
+  return null;
+}
+
+// Compress using browser CompressionStream
+async function compressStream(bytes){
+  for(const fmt of ['deflate', 'deflate-raw']){
+    try {
+      const cs = new CompressionStream(fmt);
+      const writer = cs.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+      const reader = cs.readable.getReader();
+      const chunks = [];
+      let done = false;
+      while(!done){
+        const r = await reader.read();
+        if(r.done){ done = true; break; }
+        chunks.push(r.value);
+      }
+      const total = chunks.reduce((s,c)=>s+c.length, 0);
+      const result = new Uint8Array(total);
+      let off = 0;
+      for(const c of chunks){ result.set(c, off); off += c.length; }
+      return result;
+    } catch(e) {}
+  }
+  return null;
+}
+
+function download(bytes, name){
+  const blob = new Blob([bytes], {type:'application/pdf'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 500);
+}
+
+let currentBytes = null;
+let dieCSNames = [];
+
+// === Spot color scanning ===
+function scanForDieSpots(pdfBytes){
+  const raw = new TextDecoder('latin1').decode(new Uint8Array(pdfBytes));
+  const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
+  const knownDie = ['CutContour','Dieline','ThruCut','Thru-cut','Thru_cut'];
+  const found = [];
+  for(const m of csRefs){
+    const csName = m[1], objNum = m[2];
+    const idx = raw.indexOf(objNum + ' 0 obj');
+    if(idx < 0) continue;
+    const chunk = raw.substring(idx, idx + 500);
+    const sepMatch = chunk.match(/\/Separation\s*\/([^\s/\[\]<>]+)/i);
+    if(sepMatch){
+      const spotName = sepMatch[1];
+      if(knownDie.some(d => d.toLowerCase() === spotName.toLowerCase())){
+        found.push(csName);
+        log('  Found die: ' + csName + ' = ' + spotName);
+      }
+    }
+  }
+  return found;
+}
+
+// === File loading ===
+const dropZone = el('dropZone');
+const fileInput = el('fileInput');
+
+dropZone.addEventListener('click', ()=> fileInput.click());
+dropZone.addEventListener('dragover', e=>{ e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', ()=> dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e=>{
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if(e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', ()=>{
+  if(fileInput.files[0]) loadFile(fileInput.files[0]);
+});
+
+async function loadFile(file){
+  el('log').textContent = '';
+  setStatus('Loading...');
+  currentBytes = new Uint8Array(await file.arrayBuffer());
+  log('File: ' + file.name + ' (' + currentBytes.length + ' bytes)');
+
+  dieCSNames = scanForDieSpots(currentBytes);
+  if(!dieCSNames.length){
+    setStatus('No die spot colors found');
+    log('No die spot colors found');
+    return;
+  }
+  setStatus('Ready — ' + dieCSNames.length + ' die CS found');
+  el('stripCard').style.display = '';
+  el('spotInfo').innerHTML = '<div class="info-box">Die CS: <b>' + dieCSNames.join(', ') + '</b><br>Two buttons: <b>Stripped Art PDF</b> (CMYK, die removed) and <b>Cut PDF</b> (die only, on CutContour spot).</div>';
+}
+
+// === Strip die from PDF ===
+el('stripBtn').addEventListener('click', async ()=>{
+  const btn = el('stripBtn');
+  btn.disabled = true;
+  setStatus('Stripping die...');
+  log('');
+  log('=== Stripping die ===');
+
+  try {
+    const doc = await PDFLib.PDFDocument.load(currentBytes, {ignoreEncryption:true});
+    const pages = doc.getPages();
+    log('Pages: ' + pages.length);
+    let modified = false;
+
+    for(let pi = 0; pi < pages.length; pi++){
+      const node = pages[pi].node;
+      const contentsRef = node.get(PDFLib.PDFName.of('Contents'));
+      if(!contentsRef){ log('Page ' + pi + ': no Contents'); continue; }
+
+      // Get all content stream objects
+      let streamObjs = [];
+      const contents = doc.context.lookup(contentsRef);
+      if(contents instanceof PDFLib.PDFArray){
+        for(let i = 0; i < contents.size(); i++){
+          const s = doc.context.lookup(contents.get(i));
+          if(s) streamObjs.push(s);
+        }
+      } else {
+        streamObjs.push(contents);
+      }
+      log('Page ' + pi + ': ' + streamObjs.length + ' content stream(s)');
+
+      for(let si = 0; si < streamObjs.length; si++){
+        const s = streamObjs[si];
+        log('  Stream ' + si + ': type=' + (s.constructor?.name || 'unknown') +
+            ' getContents=' + !!s.getContents +
+            ' contents=' + !!s.contents +
+            ' getUnencodedContents=' + !!s.getUnencodedContents);
+
+        // Get raw bytes from the stream object
+        let compressedBytes = null;
+        let bytesSource = '';
+        if(s.getContents){ compressedBytes = s.getContents(); bytesSource='getContents'; }
+        else if(s.contents){ compressedBytes = s.contents; bytesSource='contents'; }
+        else if(s.getUnencodedContents){ compressedBytes = s.getUnencodedContents(); bytesSource='getUnencodedContents'; }
+        if(!compressedBytes){ log('    no bytes available'); continue; }
+        log('    bytes via ' + bytesSource + ': ' + compressedBytes.length + ' bytes');
+
+        // Check if this stream has a /Filter — if not, it's uncompressed
+        // pdf-lib stream objects have a .dict with the filter info
+        let hasFilter = false;
+        try {
+          if(s.dict){
+            const filterVal = s.dict.get(PDFLib.PDFName.of('Filter'));
+            if(filterVal) hasFilter = true;
+          }
+        } catch(e) {}
+
+        // Decompress (or use raw if no filter)
+        let text;
+        if(hasFilter){
+          const decompressed = await decompressStream(compressedBytes);
+          if(!decompressed){ log('    decompress FAILED (' + compressedBytes.length + ' bytes)'); continue; }
+          text = new TextDecoder('latin1').decode(decompressed);
+        } else {
+          // No filter — raw content, use directly
+          text = new TextDecoder('latin1').decode(compressedBytes);
+          log('    no filter — using raw bytes directly');
+        }
+        let hasDie = dieCSNames.some(n => text.includes('/' + n));
+        if(!hasDie){ log('    no die content (' + text.length + ' chars)'); continue; }
+
+        log('    has die (' + text.length + ' chars) — stripping...');
+
+        // Strip die sections
+        // The die color is set once, then multiple paths are drawn under it.
+        // The entire die block runs from /CSn CS to the end of the q/Q group
+        // that contains it. In Illustrator PDFs, the die block is:
+        //   q [clip rect] W n /CS0 CS 1 SCN [width] w  q...cm...S Q  q...cm...S Q  Q
+        // We strip from /CSn CS to the matching outer Q (inclusive).
+        for(const csName of dieCSNames){
+          // Find /CSn CS ... SCN in the text
+          const csMarker = '/' + csName + ' CS';
+          let idx = text.indexOf(csMarker);
+          while(idx >= 0){
+            // Find the matching outer Q by counting q/Q depth from the CS marker
+            // The q before the clip rect was opened before /CSn CS, so we need
+            // the Q that brings depth to -1 (closing that outer q)
+            let qDepth = 0;
+            let endPos = -1;
+            for(let i = idx; i < text.length; i++){
+              if(text[i] === 'q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
+                qDepth++;
+              } else if(text[i] === 'Q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
+                qDepth--;
+                if(qDepth < 0){
+                  endPos = i + 1; // include the Q
+                  break;
+                }
+              }
+            }
+            if(endPos > 0){
+              // Also remove any preceding 'q\n...W n\n' that's part of the die block
+              // Look backwards from idx for a 'q' that starts the clip group
+              let clipStart = idx;
+              // Search backwards for 'W n' (the clip instruction)
+              const beforeCS = text.substring(0, idx);
+              const wIdx = beforeCS.lastIndexOf('W n');
+              if(wIdx >= 0){
+                // Search backwards from W n for the 'q' that starts this clip
+                const qIdx = beforeCS.lastIndexOf('q', wIdx);
+                if(qIdx >= 0 && qIdx > beforeCS.lastIndexOf('Q', wIdx)){
+                  clipStart = qIdx;
+                }
+              }
+              text = text.substring(0, clipStart) + text.substring(endPos);
+            } else {
+              // No matching Q found — just remove from /CSn CS to end
+              text = text.substring(0, idx);
+            }
+            idx = text.indexOf(csMarker);
+          }
+        }
+
+        // Recompress (or use raw if no filter)
+        const cleanedBytes = new TextEncoder().encode(text);
+        if(hasFilter){
+          const recompressed = await compressStream(cleanedBytes);
+          if(!recompressed){ log('    RECOMPRESS FAILED'); continue; }
+          if(s.contents !== undefined){
+            s.contents = recompressed;
+            modified = true;
+            log('    REPLACED: ' + compressedBytes.length + ' -> ' + recompressed.length + ' bytes (compressed)');
+          } else { log('    CANNOT set contents'); }
+        } else {
+          // No filter — store raw bytes
+          if(s.contents !== undefined){
+            s.contents = cleanedBytes;
+            modified = true;
+            log('    REPLACED: ' + compressedBytes.length + ' -> ' + cleanedBytes.length + ' bytes (raw)');
+          } else { log('    CANNOT set contents'); }
+        }
+      }
+    }
+
+    if(!modified){
+      setStatus('Nothing to strip');
+      log('No streams modified');
+      btn.disabled = false;
+      return;
+    }
+
+    log('Saving...');
+    const stripped = await doc.save({useObjectStreams: false});
+    log('Saved: ' + stripped.length + ' bytes');
+    download(stripped, 'stripped_art.pdf');
+    setStatus('Done — stripped art PDF downloaded');
+    log('Done!');
+  } catch(err){
+    log('ERROR: ' + err.message);
+    console.error(err);
+    setStatus('Error: ' + err.message);
+  }
+  btn.disabled = false;
+});
+
+// === Extract cut PDF (die only) — strip everything BUT the die ===
+el('cutBtn').addEventListener('click', async ()=>{
+  const btn = el('cutBtn');
+  btn.disabled = true;
+  setStatus('Building cut PDF...');
+  log('');
+  log('=== Building cut PDF (strip everything but die) ===');
+
+  try {
+    const doc = await PDFLib.PDFDocument.load(currentBytes, {ignoreEncryption:true});
+    const pages = doc.getPages();
+    log('Pages: ' + pages.length);
+    let modified = false;
+
+    for(let pi = 0; pi < pages.length; pi++){
+      const node = pages[pi].node;
+      const contentsRef = node.get(PDFLib.PDFName.of('Contents'));
+      if(!contentsRef){ log('Page ' + pi + ': no Contents'); continue; }
+
+      let streamObjs = [];
+      const contents = doc.context.lookup(contentsRef);
+      if(contents instanceof PDFLib.PDFArray){
+        for(let i = 0; i < contents.size(); i++){
+          const s = doc.context.lookup(contents.get(i));
+          if(s) streamObjs.push(s);
+        }
+      } else {
+        streamObjs.push(contents);
+      }
+
+      for(let si = 0; si < streamObjs.length; si++){
+        const s = streamObjs[si];
+        let compressedBytes = null;
+        if(s.getContents) compressedBytes = s.getContents();
+        else if(s.contents) compressedBytes = s.contents;
+        else if(s.getUnencodedContents) compressedBytes = s.getUnencodedContents();
+        if(!compressedBytes) continue;
+
+        // Check if this stream has a /Filter
+        let hasFilter = false;
+        try {
+          if(s.dict){
+            const filterVal = s.dict.get(PDFLib.PDFName.of('Filter'));
+            if(filterVal) hasFilter = true;
+          }
+        } catch(e) {}
+
+        let text;
+        if(hasFilter){
+          const decompressed = await decompressStream(compressedBytes);
+          if(!decompressed) continue;
+          text = new TextDecoder('latin1').decode(decompressed);
+        } else {
+          text = new TextDecoder('latin1').decode(compressedBytes);
+        }
+        let hasDie = dieCSNames.some(n => text.includes('/' + n));
+        if(!hasDie) continue;
+
+        log('  Page ' + pi + ' stream ' + si + ': ' + text.length + ' chars, has die — keeping only die...');
+
+        // Keep ONLY the die block: everything from the 'q' before the clip rect
+        // (which precedes /CSn CS) through the outer Q.
+        // Remove everything before and after it.
+        for(const csName of dieCSNames){
+          const csMarker = '/' + csName + ' CS';
+          let idx = text.indexOf(csMarker);
+          if(idx < 0) continue;
+
+          // Find the outer q that starts the die clip group
+          // Search backwards for 'W n' then the 'q' before it
+          let dieStart = idx;
+          const beforeCS = text.substring(0, idx);
+          const wIdx = beforeCS.lastIndexOf('W n');
+          if(wIdx >= 0){
+            const qIdx = beforeCS.lastIndexOf('q', wIdx);
+            if(qIdx >= 0) dieStart = qIdx;
+          }
+
+          // Find the outer Q by counting q/Q depth from dieStart
+          let qDepth = 0;
+          let endPos = -1;
+          for(let i = dieStart; i < text.length; i++){
+            if(text[i] === 'q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
+              qDepth++;
+            } else if(text[i] === 'Q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
+              qDepth--;
+              if(qDepth <= 0){ endPos = i + 1; break; }
+            }
+          }
+
+          if(endPos > 0){
+            // Keep only the die block
+            text = text.substring(dieStart, endPos);
+            // Change the color space from /CS0 to /CutContour for clarity
+            // Actually keep /CSn — the color space is already defined in the page resources
+            modified = true;
+            log('    Kept die block: ' + dieStart + ' to ' + endPos + ' (' + text.length + ' chars)');
+          }
+        }
+
+        // Recompress (or use raw if no filter)
+        const cleanedBytes = new TextEncoder().encode(text);
+        if(hasFilter){
+          const recompressed = await compressStream(cleanedBytes);
+          if(!recompressed) continue;
+          if(s.contents !== undefined){ s.contents = recompressed; modified = true; }
+        } else {
+          if(s.contents !== undefined){ s.contents = cleanedBytes; modified = true; }
+        }
+      }
+    }
+
+    if(!modified){
+      setStatus('No die found to extract');
+      log('Nothing modified');
+      btn.disabled = false;
+      return;
+    }
+
+    log('Saving...');
+    const cutBytes = await doc.save({useObjectStreams: false});
+    log('Saved: ' + cutBytes.length + ' bytes');
+    download(cutBytes, 'cut_die.pdf');
+    setStatus('Done — cut PDF downloaded');
+    log('Done!');
+  } catch(err){
+    log('ERROR: ' + err.message);
+    console.error(err);
+    setStatus('Error: ' + err.message);
+  }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>
