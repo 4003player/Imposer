@@ -504,6 +504,12 @@ function applyBleedOverride(){
           p.trimW=p.srcW; p.trimH=p.srcH;
           p.physW=p.srcW+2*bl; p.physH=p.srcH+2*bl;
           p.enlargeBleed=true;
+        } else {
+          // PDF without TrimBox, enlarge OFF — reset to original
+          p.bleed=0;
+          p.trimW=p.srcW; p.trimH=p.srcH;
+          p.physW=p.srcW; p.physH=p.srcH;
+          p.enlargeBleed=false;
         }
       }
     }
@@ -560,14 +566,8 @@ async function handleFiles(fl){
       else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
     }catch(err){alert(`Could not read ${file.name}: ${err.message}`);}
   }
-  // If any raster images were just added, prompt for bleed
-  const hasNewRaster = [...fl].some(f => {
-    const ext = f.name.split('.').pop().toLowerCase();
-    return ['jpg','jpeg','png','tif','tiff'].includes(ext);
-  });
-  if(hasNewRaster){
-    applyBleedOverride();
-  }
+  // Apply bleed settings to all newly loaded files (raster and PDF alike)
+  applyBleedOverride();
   // Collect all unique spot colors across all files/pages
   const allSpots = new Map();
   for(const f of inputFiles){
@@ -3048,13 +3048,13 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
 
   for(const p of sheet.placements){
     // Die position in FACE coordinates (bottom-left origin)
-    // Use the FULL placement area (including bleed), not just the trim area,
-    // because the die paths span the full source page.
+    // Die is at TRIM box — the original input size, not the enlarged bleed box
     let dieX, dieY, dieW, dieH;
-    dieX = (s.margin + p.x) * PTS;
-    dieY = Hp - (s.margin + p.y + p.h) * PTS;
-    dieW = p.w * PTS;
-    dieH = p.h * PTS;
+    // Die at TRIM position — cut line is at original file size, not enlarged bleed box
+    dieX = (s.margin + p.x + p.bleed) * PTS;
+    dieY = Hp - (s.margin + p.y + p.bleed + p.trimH) * PTS;
+    dieW = p.trimW * PTS;
+    dieH = p.trimH * PTS;
     if(inset > 0){
       dieX += inset * PTS;
       dieY += inset * PTS;
