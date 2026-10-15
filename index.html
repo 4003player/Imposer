@@ -379,14 +379,22 @@ async function cmykJpegToPng(bytes){
 function el(id){return document.getElementById(id);}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function fmtNum(n){return parseFloat(n.toFixed(3)).toString();}
+/* Read a numeric input: falls back to the HTML default attribute, not a hardcoded value.
+   Fixes Safari bug where .value can return '' even when a number is displayed. */
+function numVal(id, fallback){
+  const e=el(id); const v=parseFloat(e.value);
+  if(!isNaN(v)) return v;
+  const dv=parseFloat(e.defaultValue);
+  return !isNaN(dv)?dv:(fallback||0);
+}
 
 function S(){
   return {
-    stockW:parseFloat(el('stockW').value)||48, stockH:parseFloat(el('stockH').value)||96,
+    stockW:numVal('stockW',96), stockH:numVal('stockH',48),
     stockName:el('stockName').value.trim(), jobName:el('jobName').value.trim(),
-    jobNumber:el('jobNumber').value.trim(), gutter:parseFloat(el('gutter').value)||0,
-    dpi:parseFloat(el('imageDPI').value)||150, rasterBleed:parseFloat(el('rasterBleed').value)||0, inset:parseFloat(el('insetVal').value)||0, safeArea:parseFloat(el('safeArea').value)||0, enlargeBleed:el('enlargeBleed').value==='yes',
-    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:Math.max(MARGIN,parseFloat(el('safeArea').value)||0),
+    jobNumber:el('jobNumber').value.trim(), gutter:numVal('gutter',0),
+    dpi:numVal('imageDPI',150), rasterBleed:numVal('rasterBleed',0), inset:numVal('insetVal',0), safeArea:numVal('safeArea',0), enlargeBleed:el('enlargeBleed').value==='yes',
+    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:Math.max(MARGIN,numVal('safeArea',0)),
     doubleSided:document.querySelector('input[name=printMode]:checked').value==='double',
     flipAxis:document.querySelector('input[name=flipAxis]:checked').value,
     dblMode:el('dblMode').value,
@@ -466,7 +474,7 @@ el('insetVal').addEventListener('input',()=>{invalidateLayout();});
 el('safeArea').addEventListener('change',()=>{invalidateLayout();});
 el('safeArea').addEventListener('input',()=>{invalidateLayout();});
 function applyBleedOverride(){
-  const bl=parseFloat(el('rasterBleed').value)||0;
+  const bl=numVal('rasterBleed',0);
   const enlarge=el('enlargeBleed').value==='yes';
   for(const f of inputFiles){
     for(const p of f.pages){
@@ -740,8 +748,10 @@ function showSpotColorModal(allSpots, onConfirm){
 async function parsePDF(bytes,name){
   // Scan raw bytes for spot colors BEFORE pdf-lib touches the buffer (it corrupts the ArrayBuffer)
   const rawSpotMap = scanRawBytesForSpots(bytes);
+  // Copy bytes before pdf-lib's load() detaches the ArrayBuffer
+  const bytesCopy = new Uint8Array(bytes);
   const s=S(),doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
-  const pages=doc.getPages(),entry={id:++fileIdSeq,name,type:'pdf',bytes,pages:[]};
+  const pages=doc.getPages(),entry={id:++fileIdSeq,name,type:'pdf',bytes:bytesCopy,pages:[]};
   for(let i=0;i<pages.length;i++){
     const pg=pages[i],mb=pg.getMediaBox(),tb=pg.getTrimBox();
     const hasTrim=Math.abs(tb.width-mb.width)>0.5||Math.abs(tb.height-mb.height)>0.5||Math.abs(tb.x-mb.x)>0.5||Math.abs(tb.y-mb.y)>0.5;
@@ -1054,7 +1064,10 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
         w:parseFloat(reMatch[3]),h:parseFloat(reMatch[4])}); continue; }
       
       if(trimmed === 'S' || trimmed === 'f' || trimmed === 'B'){
-        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
+        // Only strokes (S) are die paths — fills (f) are printed art on the die layer
+        if(currentPath.length > 0 && (trimmed === 'S' || trimmed === 'B')){
+          paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
+        }
         currentPath = []; continue;
       }
       
@@ -2248,14 +2261,21 @@ function findBackSource(p){
 }
 
 /* === DIE STRIPPING (for Print PDF — remove die spots so Caldera doesn't generate cut marks) === */
-// Loads PDF with pdf-lib, decompresses content streams (or uses raw if no filter),
-// removes die-drawing sections, recompresses, saves. Returns Uint8Array or null.
-async function stripDieFromPdfDoc(pdfBytes, dieCSNames){
+// Colorspace-aware stripping: only removes operations painted in the die colorspace.
+// The die CS is activated by "/CSn CS ... SCN" and deactivated when a different colorspace
+// is set (any "cs", "CS", "g", "G", "rg", "RG", "k", "K", "sc", "SC" operator outside
+// the die CS). Each q/Q pair scoped within the die is removed entirely. This avoids
+// the old bug where the backwards q/W n walk removed CMYK art that shared the same
+// enclosing clip group as the die.
+async function stripDieFromPdfDoc(pdfBytes, dieCSNames, dieCSCmyk){
   if(!dieCSNames || !dieCSNames.length) return null;
+  let _diag = 'stripDie: csNames=' + dieCSNames.join(',') + ', bytesLen=' + (pdfBytes?pdfBytes.length:0);
   try {
     const doc = await PDFLib.PDFDocument.load(pdfBytes, {ignoreEncryption:true});
     const pages = doc.getPages();
+    _diag += ', pages=' + pages.length;
     let anyModified = false;
+    let totalDieFills = 0, totalDieStrokes = 0;
     
     for(let pi=0; pi<pages.length; pi++){
       const node = pages[pi].node;
@@ -2278,7 +2298,8 @@ async function stripDieFromPdfDoc(pdfBytes, dieCSNames){
         if(s.getContents) compressedBytes = s.getContents();
         else if(s.contents) compressedBytes = s.contents;
         else if(s.getUnencodedContents) compressedBytes = s.getUnencodedContents();
-        if(!compressedBytes) continue;
+        if(!compressedBytes){ _diag += ', stream=no_bytes'; continue; }
+        _diag += ', stream='+compressedBytes.length+'b';
         
         // Check if this stream has a /Filter
         let hasFilter = false;
@@ -2288,54 +2309,179 @@ async function stripDieFromPdfDoc(pdfBytes, dieCSNames){
             if(filterVal) hasFilter = true;
           }
         } catch(e) {}
+        _diag += (hasFilter?'(filtered)':'(raw)');
         
         // Get text: decompress or use raw
         let text;
         if(hasFilter){
-          // decompressPdfStream returns a string already
           text = await decompressPdfStream(compressedBytes);
-          if(!text) continue;
+          if(!text){ _diag += '(decomp_FAIL)'; continue; }
         } else {
           text = new TextDecoder('latin1').decode(compressedBytes);
         }
+        _diag += '→'+text.length+'chars';
         
         // Check if this stream contains die CS references
         let hasDie = dieCSNames.some(n => text.includes('/'+n));
-        if(!hasDie) continue;
+        if(!hasDie){ _diag += '(no_die)'; continue; }
+        _diag += '(HAS_DIE)';
         
-        // Strip die sections: remove from /CSn CS to the outermost Q
+        // Simple die stripping: find the die CS activation and its associated
+        // stroke block, remove ONLY that. Everything else stays untouched.
+        // Structure: /CSn CS ... SCN → [w] → q...S...Q (die stroke) → q...f...Q (art, kept)
+        // We remove from the CS activation through the first q...S...Q block.
+        let dieStrokeCount = 0, dieFillCount = 0;
+        let modified = false;
+        
         for(const csName of dieCSNames){
           const csMarker = '/' + csName + ' CS';
           let idx = text.indexOf(csMarker);
           while(idx >= 0){
-            // Find the outer Q by counting q/Q depth from the CS marker
-            let qDepth = 0;
-            let endPos = -1;
-            for(let i = idx; i < text.length; i++){
-              if(text[i] === 'q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
-                qDepth++;
-              } else if(text[i] === 'Q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
-                qDepth--;
-                if(qDepth < 0){ endPos = i + 1; break; }
+            // From the CS activation, scan forward to find the first q...Q block
+            // and check if it contains S (stroke = die) or f (fill = art)
+            const afterCS = text.substring(idx);
+            const aLines = afterCS.split('\n');
+            let depth = 0;
+            let firstQLine = -1; // line index of first q at depth 0→1
+            let paintLine = -1;  // line index of first S or f
+            let paintOp = null;
+            let closeQLine = -1; // line index of Q that closes the first q
+            
+            for(let ai = 1; ai < aLines.length; ai++){ // skip line 0 (CS activation)
+              const al = aLines[ai].trim();
+              if((al === 'q' || al.startsWith('q ')) && depth === 0 && firstQLine < 0){
+                firstQLine = ai;
+              }
+              if(al === 'q' || al.startsWith('q ')) depth++;
+              else if(al === 'Q'){
+                depth--;
+                if(depth === 0 && firstQLine >= 0 && closeQLine < 0){
+                  closeQLine = ai;
+                  break; // found the first complete q...Q block
+                }
+                if(depth < 0) break; // exited parent scope
+              }
+              // Detect paint ops at depth 0 (bare stroke/fill, no q wrapper)
+              // or at depth 1 (inside first q...Q block)
+              else if((depth === 0 || depth === 1) && paintLine < 0){
+                if(al === 'S' || al === 's'){ paintOp = 'S'; paintLine = ai; if(depth === 0) break; }
+                else if(al === 'f' || al === 'f*'){ paintOp = 'f'; paintLine = ai; if(depth === 0) break; }
+                else if(al === 'B' || al === 'B*'){ paintOp = 'B'; paintLine = ai; if(depth === 0) break; }
               }
             }
-            if(endPos > 0){
-              // Also remove preceding 'q\n...W n\n' that's part of the die block
-              let clipStart = idx;
-              const beforeCS = text.substring(0, idx);
-              const wIdx = beforeCS.lastIndexOf('W n');
-              if(wIdx >= 0){
-                const qIdx = beforeCS.lastIndexOf('q', wIdx);
-                if(qIdx >= 0 && qIdx > beforeCS.lastIndexOf('Q', wIdx)){
-                  clipStart = qIdx;
+            
+            if(paintOp === 'S'){
+              // Die stroke found — remove it
+              dieStrokeCount++;
+              let removeStart = idx;
+              let removeEnd;
+              
+              if(closeQLine > 0){
+                // Stroke inside q...Q block: remove CS activation through Q
+                let charCount = 0;
+                for(let ai = 0; ai <= closeQLine; ai++){
+                  charCount += aLines[ai].length + 1;
+                }
+                removeEnd = idx + charCount;
+              } else {
+                // Bare stroke at depth 0 (no q wrapper): remove CS activation through S line
+                let charCount = 0;
+                for(let ai = 0; ai <= paintLine; ai++){
+                  charCount += aLines[ai].length + 1;
+                }
+                removeEnd = idx + charCount;
+              }
+              
+              // Also look backwards: if there's a bare 'q' right before the CS
+              // that's part of this die group, include it in the removal
+              // (some files wrap the entire die in an outer q...Q)
+              
+              text = text.substring(0, removeStart) + text.substring(removeEnd);
+              modified = true;
+              idx = text.indexOf(csMarker, removeStart);
+              continue;
+            } else if(paintOp === 'f' || paintOp === 'B'){
+              dieFillCount++;
+            }
+            
+            idx = text.indexOf(csMarker, idx + csMarker.length);
+          }
+        }
+        
+        if(!modified) continue;
+        
+        // Second pass: remove orphan strokes that relied on the now-removed die CS.
+        // These are bare "rect re S" or "path S" blocks between the position where
+        // the die CS activation was and the next color-setting operator.
+        // After removing the CS activation, these would render in default black.
+        // Simple approach: scan the modified text for any S at depth 0 that isn't
+        // preceded by a non-die color setting (k/K/rg/RG/CS).
+        {
+          const lines2 = text.split('\n');
+          let hasDieColor = false; // true after we see where a die CS WAS (now removed)
+          let outText = [];
+          let pendingPath = []; // accumulate path ops until we see S or f
+          for(let i = 0; i < lines2.length; i++){
+            const t = lines2[i].trim();
+            // Track if die color could be active: it was set before and no other color replaced it
+            // A non-die CS or device color resets it
+            if(t.match(/^\d[\d. ]+ k$/) || t.match(/^\d[\d. ]+ K$/) || 
+               t.match(/^\d[\d. ]+ rg$/) || t.match(/^\d[\d. ]+ RG$/) ||
+               (t.match(/^\/\w+\s+CS\b/) && !dieCSNames.some(n => t.includes('/'+n+' CS')))){
+              hasDieColor = false;
+              if(pendingPath.length){ for(const pp of pendingPath) outText.push(pp); pendingPath = []; }
+              outText.push(lines2[i]);
+              continue;
+            }
+            // If we see a die CS marker position (would have been removed), mark die color active
+            // We detect this by: position in stream is after where first strip happened
+            // Actually simpler: if a CS was stripped, the content right after the strip point
+            // inherits whatever the die CS was. The first non-die color op clears it.
+            // We set hasDieColor = true when we see a bare S with no preceding color change
+            // since the last non-die color op.
+            
+            // For bare strokes: if we're accumulating a path and hit S, check if it's orphaned
+            if(t === 'S' || t === 's'){
+              // Is this stroke preceded by a color-setting op? Check pendingPath
+              const hasColor = pendingPath.some(pp => {
+                const pt = pp.trim();
+                return pt.match(/^\d[\d. ]+ [kKgG]$/) || pt.match(/^\d[\d. ]+ r[gG]$/) ||
+                       pt.match(/^\/\w+\s+CS\b/);
+              });
+              if(!hasColor && pendingPath.length > 0){
+                // Orphan stroke — no color set since last boundary. 
+                // Check if it's just a rect (likely die)
+                const hasRect = pendingPath.some(pp => pp.trim().match(/^[\d.\- ]+ re$/));
+                if(hasRect){
+                  // Remove this orphan stroke path
+                  dieStrokeCount++;
+                  pendingPath = [];
+                  continue;
                 }
               }
-              text = text.substring(0, clipStart) + text.substring(endPos);
-            } else {
-              text = text.substring(0, idx);
+              for(const pp of pendingPath) outText.push(pp);
+              pendingPath = [];
+              outText.push(lines2[i]);
+              continue;
             }
-            idx = text.indexOf(csMarker);
+            if(t === 'f' || t === 'f*' || t === 'B' || t === 'B*' || t === 'Q' || t === 'q' || t.startsWith('q ')){
+              for(const pp of pendingPath) outText.push(pp);
+              pendingPath = [];
+              outText.push(lines2[i]);
+              continue;
+            }
+            // Path operators or other — accumulate
+            if(t.match(/[\d.\-]+ (m|l|c|v|y|re)$/) || t === 'h' || t.match(/^[\d.]+ w$/)){
+              pendingPath.push(lines2[i]);
+              continue;
+            }
+            // Everything else — flush and keep
+            for(const pp of pendingPath) outText.push(pp);
+            pendingPath = [];
+            outText.push(lines2[i]);
           }
+          for(const pp of pendingPath) outText.push(pp);
+          text = outText.join('\n');
         }
         
         // Recompress (or use raw if no filter)
@@ -2343,18 +2489,35 @@ async function stripDieFromPdfDoc(pdfBytes, dieCSNames){
         if(hasFilter){
           const recompressed = await compressStream(cleanedBytes);
           if(!recompressed) continue;
-          if(s.contents !== undefined){ s.contents = recompressed; anyModified = true; }
+          if(s.contents !== undefined){ s.contents = recompressed; anyModified = true; totalDieFills += dieFillCount; totalDieStrokes += dieStrokeCount; }
         } else {
-          if(s.contents !== undefined){ s.contents = cleanedBytes; anyModified = true; }
+          if(s.contents !== undefined){ s.contents = cleanedBytes; anyModified = true; totalDieFills += dieFillCount; totalDieStrokes += dieStrokeCount; }
         }
       }
     }
     
-    if(!anyModified) return null;
+    if(!anyModified){ console.log(_diag + ' → NO MODS'); return null; }
+    // Remove die colorspace resource entries so Caldera doesn't see the spot
+    for(let pi=0; pi<pages.length; pi++){
+      try {
+        const node = pages[pi].node;
+        const res = doc.context.lookup(node.get(PDFLib.PDFName.of('Resources')));
+        if(!res) continue;
+        const csDict = res instanceof PDFLib.PDFDict
+          ? doc.context.lookup(res.get(PDFLib.PDFName.of('ColorSpace')))
+          : null;
+        if(csDict && csDict instanceof PDFLib.PDFDict){
+          for(const csName of dieCSNames){
+            csDict.delete(PDFLib.PDFName.of(csName));
+          }
+        }
+      } catch(e){}
+    }
     const stripped = await doc.save({useObjectStreams:false});
-    return stripped;
+    console.log(_diag + ' → STRIPPED, fills=' + totalDieFills + ', strokes=' + totalDieStrokes);
+    return {bytes: stripped, dieFills: totalDieFills, dieStrokes: totalDieStrokes};
   } catch(e) {
-    console.warn('stripDieFromPdfDoc failed:', e);
+    console.warn('stripDieFromPdfDoc failed:', e, _diag);
     return null;
   }
 }
@@ -2401,13 +2564,17 @@ async function exportPrintPDF(){
       if(f.type==='pdf'){
         // Collect die CS names from pages that have die paths
         const dieCSNames = [];
-        for(const pi of pis){const pg=f.pages[pi];if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())&&!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);}}}
+        const dieCSCmyk = {};
+        for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
         let sd;
         if(dieCSNames.length>0){
           // Strip die from Print PDF so Caldera doesn't generate cut marks
-          const strippedBytes=await stripDieFromPdfDoc(f.bytes,dieCSNames);
-          if(strippedBytes){
-            sd=await PDFLib.PDFDocument.load(strippedBytes,{ignoreEncryption:true});
+          const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
+          if(stripResult){
+            sd=await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true});
+            if(stripResult.dieFills>0){
+              alert('⚠ Die layer contains ' + stripResult.dieFills + ' FILLED object(s).\n\nFilled objects on the die layer are kept as print content (not stripped). Only ' + stripResult.dieStrokes + ' stroked die path(s) were removed.\n\nIf the die line itself is a filled object, it will still appear in the Print PDF. Check the source file in Illustrator.');
+            }
           } else {
             sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
           }

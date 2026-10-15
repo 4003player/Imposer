@@ -130,6 +130,7 @@ function download(bytes, name){
 
 let currentBytes = null;
 let dieCSNames = [];
+let dieCSCmyk = {};
 
 // === Spot color scanning ===
 function scanForDieSpots(pdfBytes){
@@ -137,6 +138,7 @@ function scanForDieSpots(pdfBytes){
   const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
   const knownDie = ['CutContour','Dieline','ThruCut','Thru-cut','Thru_cut'];
   const found = [];
+  dieCSCmyk = {};
   for(const m of csRefs){
     const csName = m[1], objNum = m[2];
     const idx = raw.indexOf(objNum + ' 0 obj');
@@ -148,6 +150,13 @@ function scanForDieSpots(pdfBytes){
       if(knownDie.some(d => d.toLowerCase() === spotName.toLowerCase())){
         found.push(csName);
         log('  Found die: ' + csName + ' = ' + spotName);
+        // Extract CMYK from C1 array
+        const c1Match = chunk.match(/\/C1\s*\[\s*([\d.\s]+)\]/);
+        if(c1Match){
+          const vals = c1Match[1].trim().split(/\s+/).map(Number);
+          if(vals.length >= 4) dieCSCmyk[csName] = vals.slice(0,4);
+        }
+        if(!dieCSCmyk[csName]) dieCSCmyk[csName] = [0,1,0,0]; // default magenta
       }
     }
   }
@@ -261,55 +270,59 @@ el('stripBtn').addEventListener('click', async ()=>{
 
         log('    has die (' + text.length + ' chars) — stripping...');
 
-        // Strip die sections
-        // The die color is set once, then multiple paths are drawn under it.
-        // The entire die block runs from /CSn CS to the end of the q/Q group
-        // that contains it. In Illustrator PDFs, the die block is:
-        //   q [clip rect] W n /CS0 CS 1 SCN [width] w  q...cm...S Q  q...cm...S Q  Q
-        // We strip from /CSn CS to the matching outer Q (inclusive).
+        // Simple die stripping: remove CS activation + first q...S...Q block.
+        // Everything else (fills, other art) stays completely untouched.
+        let dieFillCount = 0, dieStrokeCount = 0;
+        let stripModified = false;
+        
         for(const csName of dieCSNames){
-          // Find /CSn CS ... SCN in the text
           const csMarker = '/' + csName + ' CS';
-          let idx = text.indexOf(csMarker);
-          while(idx >= 0){
-            // Find the matching outer Q by counting q/Q depth from the CS marker
-            // The q before the clip rect was opened before /CSn CS, so we need
-            // the Q that brings depth to -1 (closing that outer q)
-            let qDepth = 0;
-            let endPos = -1;
-            for(let i = idx; i < text.length; i++){
-              if(text[i] === 'q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
-                qDepth++;
-              } else if(text[i] === 'Q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
-                qDepth--;
-                if(qDepth < 0){
-                  endPos = i + 1; // include the Q
-                  break;
-                }
+          let sIdx = text.indexOf(csMarker);
+          while(sIdx >= 0){
+            const afterCS = text.substring(sIdx);
+            const aLines = afterCS.split('\n');
+            let depth = 0, firstQLine = -1, paintOp = null, paintLine = -1, closeQLine = -1;
+            for(let ai = 1; ai < aLines.length; ai++){
+              const al = aLines[ai].trim();
+              if((al === 'q' || al.startsWith('q ')) && depth === 0 && firstQLine < 0) firstQLine = ai;
+              if(al === 'q' || al.startsWith('q ')) depth++;
+              else if(al === 'Q'){
+                depth--;
+                if(depth === 0 && firstQLine >= 0 && closeQLine < 0){ closeQLine = ai; break; }
+                if(depth < 0) break;
+              }
+              else if((depth === 0 || depth === 1) && paintLine < 0){
+                if(al === 'S' || al === 's'){ paintOp = 'S'; paintLine = ai; if(depth === 0) break; }
+                else if(al === 'f' || al === 'f*'){ paintOp = 'f'; paintLine = ai; if(depth === 0) break; }
+                else if(al === 'B' || al === 'B*'){ paintOp = 'B'; paintLine = ai; if(depth === 0) break; }
               }
             }
-            if(endPos > 0){
-              // Also remove any preceding 'q\n...W n\n' that's part of the die block
-              // Look backwards from idx for a 'q' that starts the clip group
-              let clipStart = idx;
-              // Search backwards for 'W n' (the clip instruction)
-              const beforeCS = text.substring(0, idx);
-              const wIdx = beforeCS.lastIndexOf('W n');
-              if(wIdx >= 0){
-                // Search backwards from W n for the 'q' that starts this clip
-                const qIdx = beforeCS.lastIndexOf('q', wIdx);
-                if(qIdx >= 0 && qIdx > beforeCS.lastIndexOf('Q', wIdx)){
-                  clipStart = qIdx;
-                }
-              }
-              text = text.substring(0, clipStart) + text.substring(endPos);
-            } else {
-              // No matching Q found — just remove from /CSn CS to end
-              text = text.substring(0, idx);
+            if(paintOp === 'S'){
+              dieStrokeCount++;
+              let endLine = closeQLine > 0 ? closeQLine : paintLine;
+              let charCount = 0;
+              for(let ai = 0; ai <= endLine; ai++) charCount += aLines[ai].length + 1;
+              text = text.substring(0, sIdx) + text.substring(sIdx + charCount);
+              stripModified = true;
+              log('    Removed stroke block: ' + charCount + ' chars');
+              sIdx = text.indexOf(csMarker, sIdx);
+              continue;
+            } else if(paintOp === 'f' || paintOp === 'B'){
+              dieFillCount++;
             }
-            idx = text.indexOf(csMarker);
+            sIdx = text.indexOf(csMarker, sIdx + csMarker.length);
           }
         }
+
+        if(dieFillCount > 0){
+          log('    ⚠ Found ' + dieFillCount + ' FILLED objects on die layer (kept as print content)');
+          log('      Stripped ' + dieStrokeCount + ' stroked die path(s)');
+          alert('⚠ Die layer contains ' + dieFillCount + ' FILLED object(s).\n\nFilled objects on the die layer are kept as print content (not stripped). Only ' + dieStrokeCount + ' stroked die path(s) were removed.\n\nIf the die line itself is a filled object, it will still appear in the stripped PDF.');
+        } else {
+          log('    Stripped ' + dieStrokeCount + ' stroked die path(s)');
+        }
+        
+        if(!stripModified){ log('    No modifications made'); continue; }
 
         // Recompress (or use raw if no filter)
         const cleanedBytes = new TextEncoder().encode(text);
@@ -337,6 +350,24 @@ el('stripBtn').addEventListener('click', async ()=>{
       log('No streams modified');
       btn.disabled = false;
       return;
+    }
+
+    // Remove die colorspace resource entries so Caldera doesn't see the spot
+    for(let pi = 0; pi < pages.length; pi++){
+      const node = pages[pi].node;
+      try {
+        const res = doc.context.lookup(node.get(PDFLib.PDFName.of('Resources')));
+        if(!res) continue;
+        const csDict = res instanceof PDFLib.PDFDict
+          ? doc.context.lookup(res.get(PDFLib.PDFName.of('ColorSpace')))
+          : null;
+        if(csDict && csDict instanceof PDFLib.PDFDict){
+          for(const csName of dieCSNames){
+            csDict.delete(PDFLib.PDFName.of(csName));
+            log('  Removed /' + csName + ' from page ' + pi + ' resources');
+          }
+        }
+      } catch(e){ log('  Resource cleanup skipped: ' + e.message); }
     }
 
     log('Saving...');
@@ -413,45 +444,37 @@ el('cutBtn').addEventListener('click', async ()=>{
 
         log('  Page ' + pi + ' stream ' + si + ': ' + text.length + ' chars, has die — keeping only die...');
 
-        // Keep ONLY the die block: everything from the 'q' before the clip rect
-        // (which precedes /CSn CS) through the outer Q.
-        // Remove everything before and after it.
-        for(const csName of dieCSNames){
-          const csMarker = '/' + csName + ' CS';
-          let idx = text.indexOf(csMarker);
-          if(idx < 0) continue;
-
-          // Find the outer q that starts the die clip group
-          // Search backwards for 'W n' then the 'q' before it
-          let dieStart = idx;
-          const beforeCS = text.substring(0, idx);
-          const wIdx = beforeCS.lastIndexOf('W n');
-          if(wIdx >= 0){
-            const qIdx = beforeCS.lastIndexOf('q', wIdx);
-            if(qIdx >= 0) dieStart = qIdx;
-          }
-
-          // Find the outer Q by counting q/Q depth from dieStart
-          let qDepth = 0;
-          let endPos = -1;
-          for(let i = dieStart; i < text.length; i++){
-            if(text[i] === 'q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
-              qDepth++;
-            } else if(text[i] === 'Q' && (i === 0 || !text[i-1].match(/[a-zA-Z0-9_]/))){
-              qDepth--;
-              if(qDepth <= 0){ endPos = i + 1; break; }
+        // Colorspace-aware extraction: keep ONLY operations painted in the die CS.
+        // Inverse of the stripping logic — drop everything NOT in die mode.
+        const dieMarkers = dieCSNames.map(n => '/' + n + ' CS');
+        const lines = text.split('\n');
+        const outLines = [];
+        let inDie = false, dieDepth = 0;
+        for(let li = 0; li < lines.length; li++){
+          const line = lines[li].trim();
+          if(!line) continue;
+          const isDieActivation = dieMarkers.some(m => line.includes(m));
+          if(isDieActivation){ inDie = true; dieDepth = 0; outLines.push(lines[li]); modified = true; continue; }
+          if(inDie){
+            if(line === 'q'){ dieDepth++; outLines.push(lines[li]); continue; }
+            if(line === 'Q'){
+              if(dieDepth > 0){ dieDepth--; outLines.push(lines[li]); continue; }
+              inDie = false; continue; // parent Q, don't keep
             }
+            const csSwitch = line.match(/^.*\/(\S+)\s+(CS|cs)\b/);
+            if(csSwitch && !dieCSNames.includes(csSwitch[1])){
+              inDie = false; continue; // non-die CS switch
+            }
+            if(csSwitch){ outLines.push(lines[li]); continue; } // another die CS
+            if(/(?:^|\s)(?:k|K|g|G|rg|RG)\s*$/.test(line)){
+              inDie = false; continue; // device color exits die
+            }
+            outLines.push(lines[li]); // die content — keep
+            continue;
           }
-
-          if(endPos > 0){
-            // Keep only the die block
-            text = text.substring(dieStart, endPos);
-            // Change the color space from /CS0 to /CutContour for clarity
-            // Actually keep /CSn — the color space is already defined in the page resources
-            modified = true;
-            log('    Kept die block: ' + dieStart + ' to ' + endPos + ' (' + text.length + ' chars)');
-          }
+          // Not in die — drop
         }
+        text = outLines.join('\n');
 
         // Recompress (or use raw if no filter)
         const cleanedBytes = new TextEncoder().encode(text);
