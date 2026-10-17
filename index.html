@@ -3032,11 +3032,53 @@ async function exportPrintDiePDF(){
     const fontB = slugFontBytes
       ? await outDoc.embedFont(slugFontBytes, {subset:true})
       : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
-    const cache=new Map(),used=new Set();
+
+    const dieSide=s.doubleSided?el('dieSideSel').value:'face';
+
+    // Build two embed caches: one WITH die (for the die side) and one WITHOUT (for the other side)
+    const cacheDie=new Map(), cacheNoDie=new Map();
+    const used=new Set();
     for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
-    for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
-      if(f.type==='pdf'){const sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}}
-      else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
+
+    for(const f of inputFiles){
+      const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){
+        // Embed unstripped source (with die)
+        const sdWithDie=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+        for(const pi of pis){const[e]=await outDoc.embedPages([sdWithDie.getPages()[pi]]);cacheDie.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+
+        // Embed die-stripped source (without die) for the non-die side
+        const dieCSNames = [];
+        const dieCSCmyk = {};
+        for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
+        // Also check user-configured die spot names
+        for(const pi of pis){const pg=f.pages[pi];if(!pg||!pg.spotColors)continue;for(const sc of pg.spotColors){if(spotColorConfig.dieSpotNames.has(sc.spotName)){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk||[0,1,0,0];}}}
+
+        if(dieCSNames.length>0 && s.doubleSided){
+          const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
+          if(stripResult){
+            const sdNoDie=await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true});
+            for(const pi of pis){const[e]=await outDoc.embedPages([sdNoDie.getPages()[pi]]);cacheNoDie.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+          } else {
+            // Strip failed — use unstripped for both
+            for(const[k,v] of cacheDie) if(!cacheNoDie.has(k)) cacheNoDie.set(k,v);
+          }
+        } else {
+          // No die to strip, or single-sided — same embed for both
+          for(const[k,v] of cacheDie) if(!cacheNoDie.has(k)) cacheNoDie.set(k,v);
+        }
+      } else {
+        let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);
+        cacheDie.set(`${f.id}-0`,{ref:e,kind:'image'});
+        cacheNoDie.set(`${f.id}-0`,{ref:e,kind:'image'});
+      }
+    }
+
+    // Face uses cacheDie when dieSide=face, cacheNoDie when dieSide=back
+    // Back uses the opposite
+    const cacheFace = dieSide==='face' ? cacheDie : cacheNoDie;
+    const cacheBack = dieSide==='back' ? cacheDie : cacheNoDie;
+
     let commonEmbed=null;
     if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
       if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
@@ -3060,16 +3102,14 @@ async function exportPrintDiePDF(){
     const csRef = outDoc.context.register(sepArray);
     const csAlias = 'SpotDie';
 
-    const dieSide=s.doubleSided?el('dieSideSel').value:'face';
-
     for(let si=0;si<sheets.length;si++){
       const sheet=sheets[si];
       const ab=getArtGroupBounds(sheet,s.margin);
       const marksWithArt=Object.assign({artBounds:ab},markOpts);
       const fp=outDoc.addPage([Wp,Hp]);
-      placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
+      placeContent(fp,sheet,cacheFace,commonEmbed,s,Wp,Hp,'face');
       placeMarks(fp,s,Wp,Hp,fontB,si,'Face',marksWithArt);
-      // Add die lines on selected side
+      // Add generated die lines on selected side
       if(dieSide==='face') addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
 
       if(s.doubleSided){
@@ -3080,7 +3120,7 @@ async function exportPrintDiePDF(){
         }
         if(needsBack){
           const bp=outDoc.addPage([Wp,Hp]);
-          placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
+          placeContent(bp,sheet,cacheBack,commonEmbed,s,Wp,Hp,'back');
           placeMarks(bp,s,Wp,Hp,fontB,si,'Back',marksWithArt);
           if(dieSide==='back') addDieLinesToPage(bp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'back',s.flipAxis);
         }
