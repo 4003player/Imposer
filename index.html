@@ -2277,10 +2277,11 @@ function drawPreview(){
   const artBounds=getArtGroupBounds(sheet,s.margin);
   ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH,artBounds)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
   ctx.fillStyle='#1d1d1f';for(const h of getHickeys(s.stockW,s.stockH)){ctx.beginPath();ctx.moveTo(h.x1*scale,h.y1*scale);ctx.lineTo(h.x2*scale,h.y2*scale);ctx.lineTo(h.x3*scale,h.y3*scale);ctx.closePath();ctx.fill();}
-  // Slug at 1/2" below art group bottom (clears reg dots at 1/4")
-  const slugY=artBounds.y2+0.5;
-  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,12*scale)}px sans-serif`;ctx.textAlign='left';ctx.textBaseline='top';
-  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),artBounds.x*scale,slugY*scale);
+  // Slug centered below art group bottom, 1/4" down (corners have reg dots, center is clear)
+  const slugY=artBounds.y2+0.25;
+  const slugCenterX=artBounds.x + artBounds.w/2;
+  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,12*scale)}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='top';
+  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),slugCenterX*scale,slugY*scale);
   const nav=el('sheetNav');let nh='';
   if(sheets.length>1)nh+=`Sheet ${viewSheet+1}/${sheets.length} <button onclick="prevSheet()">&#9664;</button><button onclick="nextSheet()">&#9654;</button>`;
   if(s.doubleSided)nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
@@ -2909,12 +2910,14 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
 
   // Slug is drawn OUTSIDE the hickey clip — it goes near the art group, not in the margin strip
   if(doSlug){
-    // Slug text at 24pt, positioned 1/2" below art group (clears reg dots)
+    // Slug text at 24pt, centered below art group (1/4" down, clear of corner dots)
     const slugSize=24;
     if(artBounds){
-      const slugX=artBounds.x*PTS;
-      const slugY=Hp-(artBounds.y2+0.5)*PTS-slugSize;
-      page.drawText(buildSlug(s,si,sideLabel),{x:slugX,y:slugY,size:slugSize,font,color:black});
+      const slugCenterX=artBounds.x*PTS + artBounds.w*PTS/2;
+      const slugY=Hp-(artBounds.y2+0.25)*PTS-slugSize;
+      const slugText=buildSlug(s,si,sideLabel);
+      const slugWidth=font.widthOfTextAtSize(slugText,slugSize);
+      page.drawText(slugText,{x:slugCenterX-slugWidth/2,y:slugY,size:slugSize,font,color:black});
     } else {
       page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-mPts*0.65,size:slugSize,font,color:black});
     }
