@@ -1,0 +1,2556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wide Format Imposer</title>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+<script>
+// Pre-load a real font file for PDF embedding (Caldera chokes on Type1 stub fonts)
+let slugFontBytes = null;
+fetch('https://cdn.jsdelivr.net/npm/@fontsource/roboto@5.0.8/files/roboto-latin-700-normal.woff')
+  .then(r => r.arrayBuffer()).then(ab => { slugFontBytes = new Uint8Array(ab); })
+  .catch(() => {}); // fallback to Helvetica if fetch fails
+</script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #f5f5f7; color: #1d1d1f; line-height: 1.5;
+}
+.container { max-width: 760px; margin: 0 auto; padding: 36px 20px; }
+header { text-align: center; margin-bottom: 32px; }
+header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+header p { color: #86868b; font-size: 14px; margin-top: 6px; }
+
+.card {
+  background: #fff; border-radius: 14px; padding: 24px 28px;
+  margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.card h2 {
+  font-size: 12px; font-weight: 600; color: #86868b;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #f0f0f0;
+}
+
+.file-drop {
+  border: 2px dashed #d2d2d7; border-radius: 14px; padding: 40px 24px;
+  text-align: center; transition: all 0.2s; cursor: pointer; background: #fafafa;
+}
+.file-drop:hover, .file-drop.dragover { border-color: #0071e3; background: #f0f7ff; }
+.file-drop .icon { font-size: 40px; margin-bottom: 10px; }
+.file-drop p { font-size: 15px; color: #6e6e73; }
+.file-drop .sub { font-size: 12px; color: #aaa; margin-top: 6px; }
+.file-drop input { display: none; }
+
+.form-row { display: flex; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.form-group { flex: 1; display: flex; flex-direction: column; min-width: 100px; }
+.form-group label {
+  font-size: 11px; font-weight: 600; color: #86868b;
+  margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.form-group input, .form-group select {
+  padding: 9px 11px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 14px; font-family: inherit; background: #fafafa;
+}
+.form-group input:focus, .form-group select:focus {
+  outline: none; border-color: #0071e3;
+  box-shadow: 0 0 0 3px rgba(0,113,227,0.15); background: #fff;
+}
+
+.toggle-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.toggle-label { font-size: 13px; color: #1d1d1f; }
+
+.file-item {
+  padding: 8px 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  background: #f9f9f9; border-radius: 8px; margin-bottom: 4px; font-size: 13px;
+}
+.file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 100px; }
+.file-item .info { color: #86868b; font-size: 11px; white-space: nowrap; }
+.file-item .drag-handle {
+  cursor: grab; margin-right: 4px; color: #bbb; font-size: 15px;
+  user-select: none; -webkit-user-select: none; line-height: 1;
+}
+.file-item .drag-handle:active { cursor: grabbing; }
+.file-item.drag-over { background: #e0f0ff; box-shadow: 0 0 0 2px #0071e3; }
+.file-item .remove {
+  background: none; border: none; color: #b91c1c; cursor: pointer;
+  font-size: 16px; font-weight: bold; padding: 0 4px;
+}
+.file-item .qty-input {
+  width: 52px; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 12px; font-family: inherit; text-align: center; background: #fff;
+}
+.file-item .qty-input:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.file-item select {
+  padding: 3px 6px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 11px; background: #fff; font-family: inherit;
+}
+.file-item .tag {
+  display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+.tag-face { background: #dbeafe; color: #1e40af; }
+.tag-back { background: #fde8e8; color: #991b1b; }
+.tag-detect { background: #d1fae5; color: #065f46; }
+.tag-white { background: #fef3c7; color: #92400e; }
+.tag-common { background: #e0e7ff; color: #3730a3; }
+.btn-opw {
+  padding: 2px 8px; border: 1px solid #f59e0b; border-radius: 4px;
+  font-size: 10px; font-weight: 600; background: #fffbeb; color: #92400e;
+  cursor: pointer; white-space: nowrap;
+}
+.btn-opw:hover { background: #fef3c7; }
+
+.white-drop {
+  border: 2px dashed #fbbf24; border-radius: 10px; padding: 20px;
+  text-align: center; cursor: pointer; background: #fffbeb; margin-top: 8px;
+}
+.white-drop:hover { border-color: #f59e0b; background: #fef3c7; }
+.white-drop p { font-size: 13px; color: #92400e; }
+.white-drop .sub { font-size: 11px; color: #b45309; }
+.white-drop input { display: none; }
+
+.preview-box {
+  background: #e8e8ed; border-radius: 14px; padding: 16px; text-align: center;
+  min-height: 120px; position: relative; margin-top: 12px;
+}
+.preview-box canvas { max-width: 100%; max-height: 420px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+.sheet-nav { position: absolute; top: 8px; right: 12px; font-size: 12px; color: #666; }
+.sheet-nav button {
+  background: #fff; border: 1px solid #d2d2d7; border-radius: 6px;
+  padding: 3px 10px; cursor: pointer; font-size: 11px; margin: 0 2px; font-weight: 500;
+}
+.sheet-nav button:hover { background: #f0f0f0; }
+
+.btn {
+  display: block; width: 100%; padding: 14px; border: none; border-radius: 12px;
+  font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: center;
+}
+.btn-primary { background: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0077ed; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,113,227,0.3); }
+.btn:disabled { background: #d2d2d7; color: #999; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-row { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.btn-row .btn { flex: 1; min-width: 140px; }
+.btn-white { background: #f59e0b; color: #fff; }
+.btn-white:hover { background: #d97706; }
+.btn-cut { background: #34d399; color: #064e3b; }
+.btn-cut:hover { background: #10b981; }
+
+.status { font-size: 13px; color: #0071e3; margin: 10px 0; text-align: center; font-weight: 500; }
+.info-box {
+  background: #f0f7ff; border: 1px solid #bfdbfe; border-radius: 10px;
+  padding: 10px 14px; margin-top: 8px; font-size: 13px; color: #1e40af; line-height: 1.7;
+}
+.info-box b { color: #0071e3; }
+.note { font-size: 11px; color: #86868b; text-align: center; margin-top: 8px; }
+
+.layout-choice {
+  border: 2px solid #d2d2d7; border-radius: 10px; padding: 10px;
+  cursor: pointer; transition: all 0.2s; background: #fafafa; text-align: center;
+  min-width: 180px; flex: 1;
+}
+.layout-choice:hover { border-color: #0071e3; background: #f0f7ff; }
+.layout-choice.selected { border-color: #0071e3; background: #e8f4ff; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
+.layout-choice canvas { max-width: 100%; border-radius: 6px; }
+.layout-choice .lc-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 4px; }
+.layout-choice .lc-info { font-size: 11px; color: #86868b; }
+.layout-choice .lc-best { display: inline-block; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
+.tag-spot { background: #f3f4f6; color: #374151; }
+.spot-overlay {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.45); z-index: 1000; display: flex;
+  align-items: center; justify-content: center; backdrop-filter: blur(2px);
+}
+.spot-modal {
+  background: #fff; border-radius: 16px; padding: 28px 32px; max-width: 540px;
+  width: 92%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3); font-family: inherit;
+}
+.spot-modal h3 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.spot-modal .spot-sub { font-size: 12px; color: #86868b; margin-bottom: 16px; }
+.spot-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0; flex-wrap: wrap;
+}
+.spot-swatch {
+  width: 22px; height: 22px; border-radius: 5px; border: 1px solid #ccc; flex-shrink: 0;
+}
+.spot-name { font-size: 14px; flex: 1; font-weight: 500; min-width: 120px; }
+.spot-role select {
+  padding: 4px 8px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 12px; background: #fafafa; font-family: inherit;
+}
+.spot-gen-section {
+  margin-top: 16px; padding: 12px 14px; border-radius: 10px;
+  background: #f0f7ff; border: 1px solid #bfdbfe;
+}
+.spot-gen-section label { font-size: 13px; font-weight: 600; color: #1e40af; display: block; margin-bottom: 6px; }
+.spot-gen-section select, .spot-gen-section input {
+  padding: 7px 10px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 13px; background: #fff; width: 100%; font-family: inherit;
+}
+.spot-btn-row { display: flex; gap: 10px; margin-top: 18px; }
+.spot-btn-row button {
+  flex: 1; padding: 11px; border: none; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.spot-btn-apply { background: #0071e3; color: #fff; }
+.spot-btn-apply:hover { background: #0077ed; }
+.spot-btn-skip { background: #e5e5ea; color: #1d1d1f; }
+.spot-btn-skip:hover { background: #d1d1d6; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Wide Format Imposer</h1>
+    <p>Impose files for flat stock -- colors and resolution preserved</p>
+  </header>
+
+  <!-- STOCK SETUP -->
+  <div class="card">
+    <h2>Stock Setup</h2>
+    <div class="form-row">
+      <div class="form-group"><label>Width (in)</label><input type="number" id="stockW" value="96" min="1" step="0.5"></div>
+      <div class="form-group"><label>Height (in)</label><input type="number" id="stockH" value="48" min="1" step="0.5"></div>
+      <div class="form-group"><label>Gutter (in)</label><input type="number" id="gutter" value="0.5" min="0" step="0.0625"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Client Name</label><input type="text" id="jobName" placeholder="e.g. Konami"></div>
+      <div class="form-group"><label>Job Number</label><input type="text" id="jobNumber" placeholder="e.g. 271778"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Substrate</label><input type="text" id="stockName" placeholder="e.g. Coroplast 4mm"></div>
+      <div class="form-group"><label>Image DPI</label><input type="number" id="imageDPI" value="150" min="72"></div>
+      <div class="form-group"><label>Bleed (in)</label><input type="number" id="rasterBleed" value="0.25" min="0" step="0.0625"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Master Qty</label><input type="number" id="masterQty" value="1" min="1" max="200"></div>
+      <div class="form-group"><label>Master Orientation</label>
+        <select id="masterOrient">
+          <option value="auto">Auto (engine decides)</option>
+          <option value="portrait">Portrait</option>
+          <option value="landscape">Landscape</option>
+        </select>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label class="toggle-label"><input type="radio" name="printMode" value="single" checked onchange="onPrintModeChange()"> Single-sided</label>
+      <label class="toggle-label"><input type="radio" name="printMode" value="double" onchange="onPrintModeChange()"> Double-sided</label>
+      <span id="flipOptions" style="display:none;font-size:12px;color:#86868b">
+        Flip:
+        <label><input type="radio" name="flipAxis" value="horizontal" checked> Top/Bottom</label>
+        <label style="margin-left:6px"><input type="radio" name="flipAxis" value="vertical"> Left/Right</label>
+      </span>
+    </div>
+    <div id="dblSideMode" style="display:none" class="toggle-row">
+      <label class="toggle-label" style="font-size:12px">Mode:</label>
+      <select id="dblMode" onchange="onDblModeChange()" style="padding:5px 8px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa">
+        <option value="same">Same -- same art both sides</option>
+        <option value="different">Different -- assign face &amp; back</option>
+        <option value="common">Common back -- one file for all backs</option>
+      </select>
+    </div>
+    <!-- Common back drop zone -->
+    <div id="commonBackSection" style="display:none">
+      <div class="white-drop" id="commonBackDrop" style="border-color:#6366f1;background:#eef2ff">
+        <p id="commonBackLabel">Drop common back file here</p>
+        <p class="sub">.pdf .ai .jpg .png .tif</p>
+        <input type="file" id="commonBackInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff">
+      </div>
+    </div>
+  </div>
+
+  <!-- FILE DROP -->
+  <div class="file-drop" id="dropZone">
+    <div class="icon">📄</div>
+    <p>Drop face files here</p>
+    <p class="sub">Accepts .pdf .ai .jpg .png .tif .tiff</p>
+    <input type="file" id="fileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" multiple>
+  </div>
+
+  <!-- FILE LIST -->
+  <div id="filesSection" style="display:none">
+    <div class="card">
+      <h2>Files &amp; Quantities</h2>
+      <div id="fileList"></div>
+    </div>
+  </div>
+  <!-- Hidden OPW file picker -->
+  <input type="file" id="opwFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+  <input type="file" id="opwAllFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+  <input type="file" id="backsAllFileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" style="display:none">
+
+  <!-- LAYOUT -->
+  <div id="layoutSection" style="display:none">
+    <button class="btn btn-primary" id="arrangeBtn">Arrange Layout</button>
+    <div id="layoutChoices" style="display:none;margin-top:12px">
+      <div class="card">
+        <h2>Choose Layout</h2>
+        <p style="font-size:12px;color:#86868b;margin-bottom:10px">Click a layout to use it</p>
+        <div id="choiceGrid" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+    <div class="preview-box" id="previewBox" style="display:none">
+      <div class="sheet-nav" id="sheetNav"></div>
+      <canvas id="preview"></canvas>
+    </div>
+    <div id="layoutInfo" class="status"></div>
+    <div id="sheetCalc" class="info-box" style="display:none"></div>
+    <div class="btn-row" id="exportRow" style="display:none">
+      <button class="btn btn-primary" id="printBtn">Download Print PDF</button>
+      <button class="btn btn-primary" id="printDieBtn" style="display:none;background:#6366f1">Download Print+Die PDF</button>
+      <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
+      <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
+    </div>
+    <p class="note">Colors, resolution, and spot channels are preserved -- no rasterization.</p>
+    <div style="text-align:center;margin-top:16px;"><button onclick="location.reload()" style="padding:12px 32px;border:none;border-radius:10px;background:#0071e3;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit;">Make Another</button></div>
+  </div>
+
+</div>
+
+<script>
+const PTS=72, REG_R=0.125*PTS, MARGIN=0.25, KAPPA=0.5522847498;
+const HICKEY_SIZE=0.7, HICKEY_DEPTH=0.36, HICKEY_OFFSET=2.0;
+
+let inputFiles=[], commonBackData=null;
+let fileIdSeq=0, sheets=[], viewSheet=0, viewSide='face', sheetPrintQty=1;
+let spotColorConfig = {
+  dieSpotNames: new Set(),
+  creaseSpotNames: new Set(),
+  generatedDieName: 'CutContour',
+  generatedDieCmyk: [0, 1, 0, 0],
+  configured: false
+};
+const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
+
+function el(id){return document.getElementById(id);}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtNum(n){return parseFloat(n.toFixed(3)).toString();}
+
+function S(){
+  return {
+    stockW:parseFloat(el('stockW').value)||48, stockH:parseFloat(el('stockH').value)||96,
+    stockName:el('stockName').value.trim(), jobName:el('jobName').value.trim(),
+    jobNumber:el('jobNumber').value.trim(), gutter:parseFloat(el('gutter').value)||0,
+    dpi:parseFloat(el('imageDPI').value)||150, rasterBleed:parseFloat(el('rasterBleed').value)||0,
+    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:MARGIN,
+    doubleSided:document.querySelector('input[name=printMode]:checked').value==='double',
+    flipAxis:document.querySelector('input[name=flipAxis]:checked').value,
+    dblMode:el('dblMode').value,
+  };
+}
+
+function fileName(s){
+  const p=[];
+  if(s.jobNumber)p.push(s.jobNumber);if(s.jobName)p.push(s.jobName);if(s.stockName)p.push(s.stockName);
+  return p.join('_').replace(/[^a-zA-Z0-9_\- ]/g,'')||'imposed';
+}
+
+/* === TIFF DECODE === */
+function decodeTiff(buf){
+  const ifds=UTIF.decode(buf);
+  UTIF.decodeImage(buf,ifds[0]);
+  const ifd=ifds[0];
+  const w=ifd.width, h=ifd.height;
+  const rgba=UTIF.toRGBA8(ifd);
+  // Check if grayscale (all R=G=B for every pixel)
+  let isGray=true;
+  for(let i=0;i<rgba.length;i+=4){if(rgba[i]!==rgba[i+1]||rgba[i]!==rgba[i+2]){isGray=false;break;}}
+  // Convert to PNG bytes for embedding
+  const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext('2d');
+  const imgData=ctx.createImageData(w,h);
+  imgData.data.set(rgba);
+  ctx.putImageData(imgData,0,0);
+  return new Promise(res=>{
+    canvas.toBlob(blob=>{
+      blob.arrayBuffer().then(ab=>{
+        res({pngBytes:new Uint8Array(ab),w,h,isGray,grayData:isGray?extractGray(rgba,w,h):null});
+      });
+    },'image/png');
+  });
+}
+
+function extractGray(rgba,w,h){
+  // Extract just the luminance channel for white plate
+  const gray=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) gray[i]=rgba[i*4];
+  return gray;
+}
+
+/* === PRINT MODE === */
+function onPrintModeChange(){
+  const d=S().doubleSided;
+  el('flipOptions').style.display=d?'':'none';
+  el('dblSideMode').style.display=d?'':'none';
+  el('commonBackSection').style.display=(d&&S().dblMode==='common')?'':'none';
+  if(!d){for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;}}
+  invalidateLayout();renderFileList();
+}
+function onDblModeChange(){
+  const s=S();
+  el('commonBackSection').style.display=(s.doubleSided&&s.dblMode==='common')?'':'none';
+  for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;}
+  invalidateLayout();renderFileList();
+}
+
+/* === MASTER CONTROLS === */
+el('masterQty').addEventListener('change',()=>{
+  const mq=parseInt(el('masterQty').value)||1;
+  for(const f of inputFiles)for(const p of f.pages)if(!p.qtyOverride)p.qty=mq;
+  invalidateLayout();renderFileList();
+});
+el('masterOrient').addEventListener('change',()=>{
+  const mo=el('masterOrient').value;
+  for(const f of inputFiles)for(const p of f.pages)if(!p.orientOverride)p.orient=mo;
+  invalidateLayout();renderFileList();
+});
+el('rasterBleed').addEventListener('change',applyBleedOverride);
+el('rasterBleed').addEventListener('input',applyBleedOverride);
+function applyBleedOverride(){
+  const bl=parseFloat(el('rasterBleed').value)||0;
+  for(const f of inputFiles){
+    for(const p of f.pages){
+      // Save original source dimensions on first override
+      if(p.srcW===undefined){p.srcW=p.physW;p.srcH=p.physH;p.srcBleed=p.bleed;}
+      if(f.type==='image'){
+        p.bleed=bl;p.trimW=Math.max(0.1,p.srcW-2*bl);p.trimH=Math.max(0.1,p.srcH-2*bl);
+        p.physW=p.srcW;p.physH=p.srcH;
+      } else {
+        // PDF: only apply bleed if source has a TrimBox (hasTrim)
+        // PDFs without TrimBox have no bleed region to expand into
+        if(p.hasTrim){
+          p.bleed=bl;p.physW=p.trimW+2*bl;p.physH=p.trimH+2*bl;
+        }
+      }
+    }
+  }
+  invalidateLayout();renderFileList();
+}
+
+/* === COMMON BACK === */
+const cbDrop=el('commonBackDrop'),cbInput=el('commonBackInput');
+cbDrop.addEventListener('click',()=>cbInput.click());
+cbDrop.addEventListener('dragover',e=>{e.preventDefault();});
+cbDrop.addEventListener('drop',async e=>{e.preventDefault();await loadCommonBack(e.dataTransfer.files[0]);});
+cbInput.addEventListener('change',async()=>{if(cbInput.files[0])await loadCommonBack(cbInput.files[0]);cbInput.value='';});
+
+async function loadCommonBack(file){
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  let data;
+  if(ext==='pdf'||ext==='ai'){
+    const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+    const pg=doc.getPages()[0];const mb=pg.getMediaBox();
+    data={name:file.name,type:'pdf',bytes,physW:mb.width/PTS,physH:mb.height/PTS};
+  }else if(['tif','tiff'].includes(ext)){
+    const dec=await decodeTiff(bytes.buffer);
+    const s=S();data={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
+      physW:dec.w/s.dpi,physH:dec.h/s.dpi,imageW:dec.w,imageH:dec.h};
+  }else{
+    const blob=new Blob([bytes],{type:file.type});const url=URL.createObjectURL(blob);
+    const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
+    const s=S();const mt=file.type||'image/png';
+    data={name:file.name,type:'image',bytes,mimeType:mt,physW:img.naturalWidth/s.dpi,physH:img.naturalHeight/s.dpi,
+      imageW:img.naturalWidth,imageH:img.naturalHeight};
+  }
+  commonBackData=data;
+  el('commonBackLabel').textContent='Common back: '+file.name;
+  invalidateLayout();
+}
+
+/* === FILE DROP === */
+const dropZone=el('dropZone'),fileInput=el('fileInput');
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>{handleFiles(fileInput.files);fileInput.value='';});
+
+async function handleFiles(fl){
+  for(const file of fl){
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const ext=file.name.split('.').pop().toLowerCase();
+    try{
+      if(ext==='pdf'||ext==='ai') await parsePDF(bytes,file.name);
+      else if(['tif','tiff'].includes(ext)) await parseTiff(bytes,file.name);
+      else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
+    }catch(err){alert(`Could not read ${file.name}: ${err.message}`);}
+  }
+  // If any raster images were just added, prompt for bleed
+  const hasNewRaster = [...fl].some(f => {
+    const ext = f.name.split('.').pop().toLowerCase();
+    return ['jpg','jpeg','png','tif','tiff'].includes(ext);
+  });
+  if(hasNewRaster){
+    const currentBleed = parseFloat(el('rasterBleed').value) || 0;
+    const input = prompt('Enter bleed for raster images (in inches).\nThis will be subtracted from all sides to create the cut line.\n\nCurrent value: ' + currentBleed + '"', currentBleed.toString());
+    if(input !== null){
+      const bl = Math.max(0, parseFloat(input) || 0);
+      el('rasterBleed').value = bl;
+      for(const f of inputFiles){
+        if(f.type !== 'image') continue;
+        for(const p of f.pages){
+          p.bleed = bl;
+          p.trimW = Math.max(0.1, p.physW - 2*bl);
+          p.trimH = Math.max(0.1, p.physH - 2*bl);
+        }
+      }
+    }
+  }
+  // Collect all unique spot colors across all files/pages
+  const allSpots = new Map();
+  for(const f of inputFiles){
+    if(f.type !== 'pdf') continue;
+    for(const p of f.pages){
+      if(!p.spotColors) continue;
+      for(const sc of p.spotColors){
+        if(!allSpots.has(sc.spotName)){
+          allSpots.set(sc.spotName, {spotName: sc.spotName, cmyk: sc.cmyk, csNames: [sc.csName]});
+        } else {
+          const existing = allSpots.get(sc.spotName);
+          if(!existing.csNames.includes(sc.csName)) existing.csNames.push(sc.csName);
+        }
+      }
+    }
+  }
+  // Check if new spots appeared that haven't been configured
+  const currentSpotNames = new Set(allSpots.keys());
+  const allConfigured = spotColorConfig.configured && [...currentSpotNames].every(n =>
+    spotColorConfig.dieSpotNames.has(n) || spotColorConfig.creaseSpotNames.has(n) ||
+    (!KNOWN_DIE_NAMES.some(d => d.toLowerCase() === n.toLowerCase())));
+  if(allSpots.size > 0 && !allConfigured){
+    showSpotColorModal([...allSpots.values()], function(){
+      invalidateLayout(); renderFileList();
+    });
+  } else {
+    extractDiePathsForAllFilesAsync().then(()=>{
+      invalidateLayout(); renderFileList();
+    });
+  }
+}
+
+/* extractDiePathsForAllFilesAsync does the actual work — see below */
+
+async function extractDiePathsForAllFilesAsync(){
+  const dieNames = [...spotColorConfig.dieSpotNames, ...spotColorConfig.creaseSpotNames];
+  for(const f of inputFiles){
+    if(f.type !== 'pdf') continue;
+    for(const p of f.pages){
+      // Skip if diePaths already set (from parsePDF initial extraction)
+      if(p.diePaths) continue;
+      if(!p.spotColors || !p.spotColors.length) continue;
+      const matchingCSNames = p.spotColors
+        .filter(sc => dieNames.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+        .map(sc => sc.csName);
+      const allCSNames = [...new Set([...matchingCSNames, ...p.spotColors
+        .filter(sc => dieNames.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+        .map(sc => sc.spotName)])];
+      if(!allCSNames.length) continue;
+      // Mark as having die paths if die spots exist (even if we can't extract the paths,
+      // the embedded page XObject already contains them)
+      p.diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:p._pageW, pageH:p._pageH};
+    }
+  }
+}
+
+/* === SPOT COLOR MODAL === */
+function cmykToRgb(c,m,y,k){
+  return [Math.round(255*(1-c)*(1-k)), Math.round(255*(1-m)*(1-k)), Math.round(255*(1-y)*(1-k))];
+}
+
+function showSpotColorModal(allSpots, onConfirm){
+  const overlay = document.createElement('div');
+  overlay.className = 'spot-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'spot-modal';
+
+  let html = '<h3>Spot Colors Detected</h3>';
+  html += '<p class="spot-sub">Classify each spot color channel found in your files</p>';
+
+  for(let i=0; i<allSpots.length; i++){
+    const sp = allSpots[i];
+    const rgb = cmykToRgb(sp.cmyk[0]||0, sp.cmyk[1]||0, sp.cmyk[2]||0, sp.cmyk[3]||0);
+    const isDie = KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase());
+    html += `<div class="spot-row">`;
+    html += `<div class="spot-swatch" style="background:rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></div>`;
+    html += `<span class="spot-name">${esc(sp.spotName)}</span>`;
+    html += `<span class="spot-role"><select data-spot-idx="${i}">`;
+    html += `<option value="print"${isDie?'':' selected'}>Print color (keep)</option>`;
+    html += `<option value="die"${isDie?' selected':''}>Die line</option>`;
+    html += `<option value="crease">Crease line</option>`;
+    html += `</select></span></div>`;
+  }
+
+  html += `<div class="spot-gen-section">`;
+  html += `<label>Name for imposer-generated dies:</label>`;
+  html += `<select id="spotGenNameSel"><option value="CutContour">CutContour</option><option value="__custom__">Custom...</option></select>`;
+  html += `<input id="spotGenNameInput" style="display:none;margin-top:6px" placeholder="Custom spot name">`;
+  html += `</div>`;
+
+  html += `<div class="spot-btn-row">`;
+  html += `<button class="spot-btn-skip" id="spotSkipBtn">Skip</button>`;
+  html += `<button class="spot-btn-apply" id="spotApplyBtn">Apply</button>`;
+  html += `</div>`;
+
+  modal.innerHTML = html;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Wire up the generated-name dropdown
+  const genSel = modal.querySelector('#spotGenNameSel');
+  const genInput = modal.querySelector('#spotGenNameInput');
+  const roleSelects = modal.querySelectorAll('[data-spot-idx]');
+
+  function updateGenOptions(){
+    const dieNames = [];
+    roleSelects.forEach(sel => {
+      if(sel.value === 'die') dieNames.push(allSpots[parseInt(sel.dataset.spotIdx)].spotName);
+    });
+    const currentVal = genSel.value;
+    genSel.innerHTML = '';
+    for(const dn of dieNames){
+      const opt = document.createElement('option');
+      opt.value = dn; opt.textContent = dn;
+      genSel.appendChild(opt);
+    }
+    if(!dieNames.length){
+      const opt = document.createElement('option');
+      opt.value = 'CutContour'; opt.textContent = 'CutContour';
+      genSel.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__'; customOpt.textContent = 'Custom...';
+    genSel.appendChild(customOpt);
+    // Restore selection if still valid
+    if([...genSel.options].some(o => o.value === currentVal)) genSel.value = currentVal;
+    else if(dieNames.length) genSel.value = dieNames[0];
+    genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
+  }
+
+  roleSelects.forEach(sel => sel.addEventListener('change', updateGenOptions));
+  genSel.addEventListener('change', () => {
+    genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
+  });
+  updateGenOptions();
+
+  function applyConfig(){
+    spotColorConfig.dieSpotNames = new Set();
+    spotColorConfig.creaseSpotNames = new Set();
+    roleSelects.forEach(sel => {
+      const sp = allSpots[parseInt(sel.dataset.spotIdx)];
+      if(sel.value === 'die') spotColorConfig.dieSpotNames.add(sp.spotName);
+      else if(sel.value === 'crease') spotColorConfig.creaseSpotNames.add(sp.spotName);
+    });
+    if(genSel.value === '__custom__' && genInput.value.trim()){
+      spotColorConfig.generatedDieName = genInput.value.trim();
+    } else if(genSel.value !== '__custom__'){
+      spotColorConfig.generatedDieName = genSel.value;
+    }
+    // Find CMYK for the generated die name from existing spots
+    const matchSpot = allSpots.find(s => s.spotName === spotColorConfig.generatedDieName);
+    if(matchSpot) spotColorConfig.generatedDieCmyk = matchSpot.cmyk;
+    spotColorConfig.configured = true;
+    overlay.remove();
+    extractDiePathsForAllFilesAsync().then(onConfirm);
+  }
+
+  function skipConfig(){
+    // Use defaults: auto-detect die names
+    spotColorConfig.dieSpotNames = new Set();
+    spotColorConfig.creaseSpotNames = new Set();
+    for(const sp of allSpots){
+      if(KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase())){
+        spotColorConfig.dieSpotNames.add(sp.spotName);
+      }
+    }
+    spotColorConfig.generatedDieName = 'CutContour';
+    spotColorConfig.generatedDieCmyk = [0, 1, 0, 0];
+    spotColorConfig.configured = true;
+    overlay.remove();
+    extractDiePathsForAllFilesAsync().then(onConfirm);
+  }
+
+  modal.querySelector('#spotApplyBtn').addEventListener('click', applyConfig);
+  modal.querySelector('#spotSkipBtn').addEventListener('click', skipConfig);
+}
+
+async function parsePDF(bytes,name){
+  // Scan raw bytes for spot colors BEFORE pdf-lib touches the buffer (it corrupts the ArrayBuffer)
+  const rawSpotMap = scanRawBytesForSpots(bytes);
+  const s=S(),doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+  const pages=doc.getPages(),entry={id:++fileIdSeq,name,type:'pdf',bytes,pages:[]};
+  for(let i=0;i<pages.length;i++){
+    const pg=pages[i],mb=pg.getMediaBox(),tb=pg.getTrimBox();
+    const hasTrim=Math.abs(tb.width-mb.width)>0.5||Math.abs(tb.height-mb.height)>0.5||Math.abs(tb.x-mb.x)>0.5||Math.abs(tb.y-mb.y)>0.5;
+    let physW,physH,trimW,trimH,bleed;
+    if(hasTrim){trimW=tb.width/PTS;trimH=tb.height/PTS;physW=mb.width/PTS;physH=mb.height/PTS;bleed=Math.max(0,Math.min((physW-trimW)/2,(physH-trimH)/2));}
+    else{physW=mb.width/PTS;physH=mb.height/PTS;trimW=physW;trimH=physH;bleed=0;}
+    const userBl=s.rasterBleed;
+    const srcW=physW, srcH=physH, srcBleed=bleed;
+    if(userBl>0&&hasTrim){bleed=userBl;physW=trimW+2*userBl;physH=trimH+2*userBl;}
+    // Extract all spot colors from the page
+    const spotColors = extractAllSpotColors(bytes, doc, i, rawSpotMap);
+    // Immediately extract die paths for known die names (modal can reclassify later)
+    const knownDieCS = spotColors
+      .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+      .map(sc => sc.csName);
+    // Also include spot names themselves to match content stream references
+    const allDieCS = [...new Set([...knownDieCS, ...spotColors
+      .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+      .map(sc => sc.spotName)])];
+    let diePaths = allDieCS.length > 0 ? extractPathsForCS(bytes, doc, i, mb.width, mb.height, allDieCS) : null;
+    // If extraction failed but we KNOW die spots exist in the file, mark as present
+    // (the embedded page XObject already contains the die paths — we just can't parse them)
+    if(!diePaths && allDieCS.length > 0) diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:mb.width, pageH:mb.height};
+    console.log('parsePDF page', i, 'spotColors:', spotColors.map(s=>s.spotName+'/'+s.csName), 'allDieCS:', allDieCS, 'diePaths:', diePaths ? diePaths.paths.length+' paths' : 'null');
+    entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,spotColors,
+      srcW,srcH,srcBleed,
+      qty:s.masterQty,qtyOverride:false,orient:s.masterOrient,orientOverride:false,
+      side:'face',backRef:null,
+      _pageW:mb.width,_pageH:mb.height});
+  }
+  inputFiles.push(entry);
+}
+
+/* === SPOT COLOR EXTRACTION === */
+/* Scan raw PDF bytes for CS→Separation mappings BEFORE pdf-lib corrupts the buffer */
+function scanRawBytesForSpots(pdfBytes){
+  const map = new Map(); // csName → {spotName, cmyk}
+  try{
+    const raw = new TextDecoder('latin1').decode(pdfBytes);
+    console.log('scanRawBytesForSpots: raw length=', raw.length);
+    const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
+    console.log('scanRawBytesForSpots: found', csRefs.length, 'CS refs');
+    for(const m of csRefs){
+      const csName=m[1], objNum=m[2];
+      const idx = raw.indexOf(objNum + ' 0 obj');
+      if(idx < 0) continue;
+      const chunk = raw.substring(idx, idx+500);
+      const sepMatch = chunk.match(/\/Separation\s*\/([^\s/\[\]<>]+)/i);
+      if(sepMatch){
+        const spotName = sepMatch[1];
+        let cmyk = [0,0,0,1];
+        const c1Match = chunk.match(/\/C1\s*\[\s*([\d.\s]+)\]/);
+        if(c1Match){
+          const vals = c1Match[1].trim().split(/\s+/).map(Number);
+          if(vals.length >= 4) cmyk = vals.slice(0,4);
+        }
+        map.set(csName, {spotName, cmyk});
+      }
+    }
+  }catch(e){ console.error('scanRawBytesForSpots error:', e); }
+  console.log('scanRawBytesForSpots result:', [...map.entries()].map(([k,v])=>k+'='+v.spotName));
+  return map;
+}
+
+function extractAllSpotColors(pdfBytes, doc, pageIdx, rawSpotMap){
+  function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
+  const pg = doc.getPages()[pageIdx];
+  const node = pg.node;
+  let resDict = resolve(node.get(PDFLib.PDFName.of('Resources')));
+  if(!resDict || !(resDict instanceof PDFLib.PDFDict)) return [];
+  let csDict = resolve(resDict.get(PDFLib.PDFName.of('ColorSpace')));
+  const spots = [];
+  // Strategy 1: structured pdf-lib API
+  if(csDict && csDict instanceof PDFLib.PDFDict){
+    try {
+      console.log('extractAllSpotColors Strategy 1: csDict has', [...csDict.entries()].length, 'entries');
+      for(const [key, val] of csDict.entries()){
+        let arr = resolve(val);
+        const keyStr = key instanceof PDFLib.PDFName ? key.decodeText() : key.toString();
+        console.log('  entry', keyStr, '-> type:', arr?.constructor?.name, 'isArray:', arr instanceof PDFLib.PDFArray, 'size:', arr instanceof PDFLib.PDFArray ? arr.size() : 'n/a');
+        if(arr instanceof PDFLib.PDFArray && arr.size() >= 2){
+          const type = arr.get(0);
+          const sepName = arr.get(1);
+          console.log('    [0]:', type?.constructor?.name, type instanceof PDFLib.PDFName ? type.decodeText() : String(type));
+          console.log('    [1]:', sepName?.constructor?.name, sepName instanceof PDFLib.PDFName ? sepName.decodeText() : String(sepName));
+          if(type instanceof PDFLib.PDFName && type.decodeText() === 'Separation' &&
+             sepName instanceof PDFLib.PDFName){
+            const nm = sepName.decodeText();
+            const csName = key instanceof PDFLib.PDFName ? key.decodeText() : key.toString();
+            // Try to extract CMYK from tint transform C1
+            let cmyk = [0,0,0,1];
+            if(arr.size() >= 4){
+              const fn = resolve(arr.get(3));
+              if(fn && fn instanceof PDFLib.PDFDict){
+                const c1 = fn.get(PDFLib.PDFName.of('C1'));
+                if(c1 && c1 instanceof PDFLib.PDFArray && c1.size() >= 4){
+                  cmyk = [];
+                  for(let ci=0;ci<4;ci++){
+                    const v = c1.get(ci);
+                    cmyk.push(v && typeof v.numberValue === 'function' ? v.numberValue() :
+                              v && typeof v.value === 'function' ? parseFloat(v.value()) :
+                              typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+                  }
+                }
+              }
+            }
+            spots.push({csName, spotName: nm, cmyk});
+          }
+        }
+      }
+    } catch(e){ /* ignore */ }
+  }
+  // Strategy 2: use pre-scanned raw bytes map (scanned before pdf-lib corrupted the buffer)
+  if(rawSpotMap){
+    for(const [csName, info] of rawSpotMap){
+      if(!spots.find(s=>s.csName===csName)){
+        spots.push({csName, spotName: info.spotName, cmyk: info.cmyk});
+      }
+    }
+  }
+  console.log('extractAllSpotColors final:', spots.map(s=>s.spotName+'/'+s.csName));
+  return spots;
+}
+
+/* === DIE LINE EXTRACTION === */
+function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
+  if(!csNames || !csNames.length) return null;
+  function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
+  const pg = doc.getPages()[pageIdx];
+  const node = pg.node;
+
+  // csNames already contains the correct CS reference names (e.g. CS7) and spot names
+  // (e.g. CutContour) from the pre-scan. Use them directly for content stream matching.
+  const dieCSNames = [...csNames];
+  
+  // Now parse the content stream to extract paths drawn with those CS names
+  let contentStr = '';
+  try {
+    const contents = resolve(node.get(PDFLib.PDFName.of('Contents')));
+    if(!contents) return null;
+    let streams = [];
+    if(contents instanceof PDFLib.PDFArray){
+      for(let i=0;i<contents.size();i++){
+        const s = resolve(contents.get(i));
+        if(s) streams.push(s);
+      }
+    } else {
+      streams.push(contents);
+    }
+    const parts = [];
+    for(const s of streams){
+      // Try multiple methods to get decoded content
+      let bytes = null;
+      if(s.getUnencodedContents) bytes = s.getUnencodedContents();
+      else if(s.getContents) bytes = s.getContents();
+      else if(s.contents) bytes = s.contents;
+      if(bytes) parts.push(new TextDecoder('latin1').decode(bytes));
+    }
+    contentStr = parts.join('\n');
+  } catch(e){ return null; }
+  
+  if(!contentStr) return null;
+  
+  // Parse: find sections where a die CS is active and extract path operators
+  // Pattern: /CSn CS 1 SCN ... path ops ... S or f or B (stroke/fill)
+  const paths = [];
+  const lines = contentStr.split(/[\r\n]+/);
+  let inDiePath = false;
+  let currentPath = [];
+  let lineWidth = 2.835; // default
+  
+  for(const line of lines){
+    const trimmed = line.trim();
+    
+    // Check for CS switch to die line
+    for(const csName of dieCSNames){
+      if(trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
+         trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')){
+        inDiePath = true;
+        currentPath = [];
+        break;
+      }
+    }
+    
+    // Check for CS switch away from die line, or end of marked content
+    if(inDiePath){
+      if((trimmed.includes(' CS ') && !dieCSNames.some(n => trimmed.includes('/'+n))) ||
+         trimmed === 'EMC' || trimmed === 'Q'){
+        // If we have a path, save it
+        if(currentPath.length > 0){
+          paths.push({ops: [...currentPath], width: lineWidth});
+        }
+        inDiePath = false;
+        currentPath = [];
+        continue;
+      }
+      
+      // Parse width
+      const wMatch = trimmed.match(/^([\d.]+)\s+w\s*$/);
+      if(wMatch) { lineWidth = parseFloat(wMatch[1]); continue; }
+      
+      // Parse path operators
+      // m = moveto, l = lineto, c = curveto, h = closepath, re = rect
+      // S = stroke, f = fill, B = both
+      const mMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+m\s*$/);
+      if(mMatch){ currentPath.push({op:'m', x:parseFloat(mMatch[1]), y:parseFloat(mMatch[2])}); continue; }
+      
+      const lMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+l\s*$/);
+      if(lMatch){ currentPath.push({op:'l', x:parseFloat(lMatch[1]), y:parseFloat(lMatch[2])}); continue; }
+      
+      const cMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+c\s*$/);
+      if(cMatch){ currentPath.push({op:'c', x1:parseFloat(cMatch[1]),y1:parseFloat(cMatch[2]),
+        x2:parseFloat(cMatch[3]),y2:parseFloat(cMatch[4]),
+        x3:parseFloat(cMatch[5]),y3:parseFloat(cMatch[6])}); continue; }
+      
+      if(trimmed === 'h'){ currentPath.push({op:'h'}); continue; }
+      
+      const reMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+re\s*$/);
+      if(reMatch){ currentPath.push({op:'re', x:parseFloat(reMatch[1]),y:parseFloat(reMatch[2]),
+        w:parseFloat(reMatch[3]),h:parseFloat(reMatch[4])}); continue; }
+      
+      if(trimmed === 'S' || trimmed === 'f' || trimmed === 'B'){
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
+        currentPath = [];
+        continue;
+      }
+      
+      // Handle cm (transform) — apply to subsequent coordinates
+      const cmMatch = trimmed.match(/^q\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(cmMatch){
+        currentPath.push({op:'cm', a:parseFloat(cmMatch[1]),b:parseFloat(cmMatch[2]),
+          c:parseFloat(cmMatch[3]),d:parseFloat(cmMatch[4]),
+          e:parseFloat(cmMatch[5]),f:parseFloat(cmMatch[6])});
+        continue;
+      }
+      // Bare cm without q
+      const cmMatch2 = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(cmMatch2){
+        currentPath.push({op:'cm', a:parseFloat(cmMatch2[1]),b:parseFloat(cmMatch2[2]),
+          c:parseFloat(cmMatch2[3]),d:parseFloat(cmMatch2[4]),
+          e:parseFloat(cmMatch2[5]),f:parseFloat(cmMatch2[6])});
+      }
+    }
+  }
+  // Catch any remaining path
+  if(inDiePath && currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+  
+  return paths.length > 0 ? {paths, pageW, pageH} : null;
+}
+
+async function parseTiff(bytes,name){
+  const dec=await decodeTiff(bytes.buffer);
+  const s=S();
+  // Try to read DPI from TIFF metadata
+  const ifds=UTIF.decode(bytes.buffer);
+  let fileDPI = null;
+  if(ifds[0]){
+    const xres=ifds[0].t282; // XResolution tag
+    if(xres && xres.length) fileDPI=xres[0];
+  }
+  const dpi=fileDPI||s.dpi;
+  const physW=dec.w/dpi,physH=dec.h/dpi,bl=s.rasterBleed;
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
+    imageW:dec.w,imageH:dec.h,
+    pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
+      orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+/* === DPI DETECTION (from Proofmaker) === */
+function detectDpiFromBytes(uint8, filename) {
+  var dpi = null;
+  var lower = filename.toLowerCase();
+
+  // JPEG: try JFIF APP0, EXIF APP1, then Photoshop APP13 (8BIM ResolutionInfo)
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+    dpi = parseJfifDpi(uint8) || parseExifDpi(uint8) || parsePhotoshopDpi(uint8);
+  }
+  // PNG: look for pHYs chunk
+  else if (lower.endsWith('.png')) {
+    dpi = parsePngDpi(uint8);
+  }
+  // TIFF: IFD tags
+  else if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
+    var info = parseTiffIfdFull(uint8, 0);
+    if (info) dpi = info.dpi;
+  }
+  return dpi;
+}
+
+// Scan past JPEG fill bytes (0xFF padding) and marker-alignment junk.
+// Returns the index of the next valid 0xFF marker byte, or -1.
+function jpegNextMarker(d, start, limit) {
+  var i = start;
+  // Skip fill bytes (consecutive 0xFF)
+  while (i < limit && d[i] === 0xFF) i++;
+  // Back up one — we want to land ON the 0xFF that precedes the marker byte
+  if (i > start) i--;
+  // If we're not on 0xFF, scan forward to find one
+  while (i < limit && d[i] !== 0xFF) i++;
+  if (i >= limit) return -1;
+  // Skip any additional fill 0xFF bytes
+  while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+  return (i < limit - 1 && d[i] === 0xFF) ? i : -1;
+}
+
+function parseJfifDpi(d) {
+  // JFIF APP0: FF D8 FF E0 [len16] "JFIF\0" version densityUnit Xdensity Ydensity
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    // Stop at SOS (start of scan) — no more metadata after this
+    if (marker === 0xDA) break;
+    // Skip markers that have no length field (RST0-7, SOI, EOI, TEM)
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; } // invalid length — skip marker and retry
+    if (marker === 0xE0 && segLen >= 14) { // APP0 with enough room for JFIF
+      if (i + 13 < limit &&
+          d[i+4]===0x4A && d[i+5]===0x46 && d[i+6]===0x49 && d[i+7]===0x46 && d[i+8]===0x00) {
+        var unit = d[i + 11];
+        var xd = (d[i + 12] << 8) | d[i + 13];
+        if (unit === 1 && xd > 0) return xd; // dots per inch
+        if (unit === 2 && xd > 0) return Math.round(xd * 2.54); // dots per cm → dpi
+                // unit 0 = "aspect ratio only" but many JPEG encoders still store real DPI;
+                // if value looks like a typical print DPI (72–1200), use it as best-guess
+                if (unit === 0 && xd >= 72 && xd <= 1200) return xd;
+              }
+            }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parseExifDpi(d) {
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break;
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xE1) { // APP1 EXIF
+      if (i + 10 < limit &&
+          d[i+4]===0x45 && d[i+5]===0x78 && d[i+6]===0x69 && d[i+7]===0x66 &&
+          d[i+8]===0x00 && d[i+9]===0x00) {
+        var tiffStart = i + 10; // after marker(2)+len(2)+Exif\0\0(6)
+        var info = parseTiffIfdFull(d, tiffStart);
+        if (info && info.dpi) return info.dpi;
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePhotoshopDpi(d) {
+  // Photoshop APP13 (FFED): look for 8BIM resource 0x03ED (ResolutionInfo)
+  // Format: fixed-point 16.16 hRes, uint16 hResUnit (1=ppi, 2=ppcm), ...
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 1048576); // scan up to 1 MB (large ICC profiles push APP13 far out)
+  var i = 2;
+  while (i >= 0 && i < limit - 10) {
+    // Find next marker
+    if (d[i] !== 0xFF) { i++; continue; }
+    while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+    if (i >= limit - 4) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break; // SOS
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xED) { // APP13
+      // Check for "Photoshop 3.0 " header
+      var segEnd = Math.min(i + 2 + segLen, limit);
+      var j = i + 4;
+      // Walk 8BIM resource blocks
+      while (j < segEnd - 12) {
+        if (d[j] === 0x38 && d[j+1] === 0x42 && d[j+2] === 0x49 && d[j+3] === 0x4D) { // "8BIM"
+          var resId = (d[j + 4] << 8) | d[j + 5];
+          // Skip pascal string (padded to even length)
+          var pLen = d[j + 6];
+          if (pLen % 2 === 0) pLen++;
+          var dataOff = j + 7 + pLen;
+          if (dataOff + 4 > segEnd) break;
+          var dataLen = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+          dataOff += 4;
+          if (resId === 0x03ED && dataLen >= 8 && dataOff + 8 <= segEnd) {
+            // ResolutionInfo: 4 bytes fixed-point 16.16 hRes, 2 bytes hResUnit
+            var hResFixed = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+            var hRes = hResFixed / 65536;
+            var hResUnit = (d[dataOff + 4] << 8) | d[dataOff + 5]; // 1=ppi, 2=ppcm
+            if (hRes > 0) {
+              return hResUnit === 2 ? Math.round(hRes * 2.54) : Math.round(hRes);
+            }
+          }
+          j = dataOff + dataLen;
+          if (dataLen % 2 !== 0) j++; // pad to even
+        } else {
+          j++;
+        }
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePngDpi(d) {
+  // PNG chunks: after 8-byte signature, each chunk is [len32][type4][data][crc32]
+  if (d.length < 20 || d[0]!==0x89 || d[1]!==0x50) return null;
+  var i = 8;
+  while (i < d.length - 12) {
+    var len = (d[i]<<24) | (d[i+1]<<16) | (d[i+2]<<8) | d[i+3];
+    if (len < 0 || len > d.length) break; // sanity
+    var type = String.fromCharCode(d[i+4], d[i+5], d[i+6], d[i+7]);
+    if (type === 'IDAT' || type === 'IEND') break; // past metadata
+    if (type === 'pHYs' && len === 9) {
+      var ppuX = (d[i+8]<<24) | (d[i+9]<<16) | (d[i+10]<<8) | d[i+11];
+      var unit = d[i+16];
+      if (unit === 1 && ppuX > 0) return Math.round(ppuX / 39.3701); // meters → inches
+      return null; // unit 0 = unknown
+    }
+    i += 12 + len;
+  }
+  return null;
+}
+
+// Combined TIFF IFD parser — returns { dpi, width, height } or null.
+// Works for both standalone TIFF files (base=0) and JPEG EXIF (base=APP1 offset).
+function parseTiffIfdFull(d, base) {
+  if (base + 8 > d.length) return null;
+  var le = (d[base]===0x49 && d[base+1]===0x49); // II = little-endian
+  var be = (d[base]===0x4D && d[base+1]===0x4D); // MM = big-endian
+  if (!le && !be) return null;
+
+  function u16(off) {
+    off += base;
+    if (off+2 > d.length) return 0;
+    return le ? (d[off] | (d[off+1]<<8)) : ((d[off]<<8) | d[off+1]);
+  }
+  function u32(off) {
+    off += base;
+    if (off+4 > d.length) return 0;
+    return le ? ((d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24)) >>> 0)
+              : (((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]) >>> 0);
+  }
+
+  var magic = u16(2);
+  if (magic !== 42) return null; // not classic TIFF
+
+  var ifdOff = u32(4);
+  if (ifdOff === 0 || base + ifdOff + 2 > d.length) return null;
+  var nEntries = u16(ifdOff);
+  if (nEntries === 0 || nEntries > 500) return null; // sanity
+  var resUnit = 2; // default = inches
+  var xRes = null;
+  var imgWidth = null, imgHeight = null;
+
+  for (var e = 0; e < nEntries; e++) {
+    var entryOff = ifdOff + 2 + e * 12;
+    if (base + entryOff + 12 > d.length) break;
+    var tag = u16(entryOff);
+    var type = u16(entryOff + 2);
+    var count = u32(entryOff + 4);
+    var valOff = u32(entryOff + 8);
+
+    // ImageWidth (tag 0x0100)
+    if (tag === 0x0100) {
+      imgWidth = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ImageLength / height (tag 0x0101)
+    if (tag === 0x0101) {
+      imgHeight = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ResolutionUnit (tag 0x0128)
+    if (tag === 0x0128) {
+      resUnit = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // XResolution (tag 0x011A) — RATIONAL, SHORT, or LONG
+    if (tag === 0x011A) {
+      if (type === 5) { // RATIONAL: num/den stored at valOff
+        if (base + valOff + 8 <= d.length) {
+          var num = u32(valOff);
+          var den = u32(valOff + 4);
+          if (den > 0) xRes = num / den;
+        }
+      } else if (type === 3) { // SHORT
+        xRes = u16(entryOff + 8);
+      } else if (type === 4) { // LONG
+        xRes = valOff;
+      }
+    }
+  }
+
+  var dpi = null;
+  if (xRes && xRes > 0) {
+    dpi = (resUnit === 3) ? Math.round(xRes * 2.54) : Math.round(xRes);
+  }
+  return { dpi: dpi, width: imgWidth, height: imgHeight };
+}
+
+async function parseRaster(bytes,name,mimeType){
+  const blob=new Blob([bytes],{type:mimeType}),url=URL.createObjectURL(blob);
+  const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
+  const s=S();
+  const fileDPI=detectDpiFromBytes(bytes,name);
+  const dpi=fileDPI||s.dpi;
+  const physW=img.naturalWidth/dpi,physH=img.naturalHeight/dpi,bl=s.rasterBleed;
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes,mimeType,
+    imageW:img.naturalWidth,imageH:img.naturalHeight,
+    pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
+      orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+/* === OPW (Opaque White Plate) === */
+let opwTargetFileId=null, opwTargetPageIndex=null;
+const opwInput=el('opwFileInput');
+opwInput.addEventListener('change',async()=>{
+  if(!opwInput.files[0]||opwTargetFileId===null)return;
+  const file=opwInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const f=inputFiles.find(x=>x.id===opwTargetFileId);if(!f)return;
+  const p=f.pages.find(x=>x.index===opwTargetPageIndex);if(!p)return;
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      p.opw={name:file.name,type:'pdf',bytes,pageIndex:0};
+    }else if(['tif','tiff'].includes(ext)){
+      const dec=await decodeTiff(bytes.buffer);
+      p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
+    }else{
+      p.opw={name:file.name,type:'image',bytes,mimeType:file.type||'image/png'};
+    }
+  }catch(err){alert('Could not read OPW file: '+err.message);}
+  opwInput.value='';opwTargetFileId=null;opwTargetPageIndex=null;
+  renderFileList();
+});
+
+function pickOPW(fid,pidx){
+  opwTargetFileId=fid;opwTargetPageIndex=pidx;
+  opwInput.click();
+}
+function removeOPW(fid,pidx){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  const p=f.pages.find(x=>x.index===pidx);if(!p)return;
+  p.opw=null;renderFileList();
+}
+
+/* === BULK OPW (all pages) === */
+let opwAllTargetFileId=null;
+const opwAllInput=el('opwAllFileInput');
+opwAllInput.addEventListener('change',async()=>{
+  if(!opwAllInput.files[0]||opwAllTargetFileId===null)return;
+  const file=opwAllInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const f=inputFiles.find(x=>x.id===opwAllTargetFileId);if(!f){opwAllInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+      const pgCount=doc.getPageCount();
+      for(let i=0;i<f.pages.length;i++){
+        const opwIdx=Math.min(i,pgCount-1);
+        f.pages[i].opw={name:file.name+(pgCount>1?' p'+(opwIdx+1):''),type:'pdf',bytes,pageIndex:opwIdx};
+      }
+    }else if(['tif','tiff'].includes(ext)){
+      const dec=await decodeTiff(bytes.buffer);
+      for(const p of f.pages) p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
+    }else{
+      for(const p of f.pages) p.opw={name:file.name,type:'image',bytes,mimeType:file.type||'image/png'};
+    }
+  }catch(err){alert('Could not read OPW file: '+err.message);}
+  opwAllInput.value='';opwAllTargetFileId=null;
+  renderFileList();
+});
+function pickOPWAll(fid){
+  opwAllTargetFileId=fid;
+  opwAllInput.click();
+}
+function removeOPWAll(fid){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  for(const p of f.pages) p.opw=null;
+  renderFileList();
+}
+
+/* === BULK BACKS (all pages) === */
+let backsAllTargetFileId=null;
+const backsAllInput=el('backsAllFileInput');
+backsAllInput.addEventListener('change',async()=>{
+  if(!backsAllInput.files[0]||backsAllTargetFileId===null)return;
+  const file=backsAllInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const faceFile=inputFiles.find(x=>x.id===backsAllTargetFileId);if(!faceFile){backsAllInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      await parsePDF(bytes,file.name);
+    }else if(['tif','tiff'].includes(ext)){
+      await parseTiff(bytes,file.name);
+    }else if(['jpg','jpeg','png'].includes(ext)){
+      await parseRaster(bytes,file.name,file.type);
+    }
+    // The newly added file is the last in inputFiles
+    const backFile=inputFiles[inputFiles.length-1];
+    // Set all its pages as backs, pair 1-to-1
+    const s=S();
+    for(let i=0;i<backFile.pages.length&&i<faceFile.pages.length;i++){
+      backFile.pages[i].side='back';
+      backFile.pages[i].backRef={fileId:faceFile.id,pageIndex:faceFile.pages[i].index};
+    }
+    // Also ensure double-sided different mode is active
+    if(!s.doubleSided){
+      document.querySelector('input[name=printMode][value=double]').checked=true;
+      onPrintModeChange();
+    }
+    if(el('dblMode').value!=='different'){
+      el('dblMode').value='different';
+      onDblModeChange();
+    }
+    // Re-set backs after mode change (onDblModeChange resets sides)
+    for(let i=0;i<backFile.pages.length&&i<faceFile.pages.length;i++){
+      backFile.pages[i].side='back';
+      backFile.pages[i].backRef={fileId:faceFile.id,pageIndex:faceFile.pages[i].index};
+    }
+  }catch(err){alert('Could not read Backs file: '+err.message);}
+  backsAllInput.value='';backsAllTargetFileId=null;
+  invalidateLayout();renderFileList();
+});
+function pickBacksAll(fid){
+  backsAllTargetFileId=fid;
+  backsAllInput.click();
+}
+
+/* === SINGLE-PAGE BACK PICKER === */
+let backSingleTargetFileId=null,backSingleTargetPageIdx=null;
+const backSingleInput=document.createElement('input');
+backSingleInput.type='file';backSingleInput.accept='.pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff';backSingleInput.style.display='none';
+document.body.appendChild(backSingleInput);
+backSingleInput.addEventListener('change',async()=>{
+  if(!backSingleInput.files[0]||backSingleTargetFileId===null)return;
+  const file=backSingleInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const faceFile=inputFiles.find(x=>x.id===backSingleTargetFileId);
+  if(!faceFile){backSingleInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai') await parsePDF(bytes,file.name);
+    else if(['tif','tiff'].includes(ext)) await parseTiff(bytes,file.name);
+    else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
+    const backFile=inputFiles[inputFiles.length-1];
+    const s=S();
+    // Set first page of back file as back, paired to the target face page
+    if(backFile.pages.length>0){
+      backFile.pages[0].side='back';
+      backFile.pages[0].backRef={fileId:backSingleTargetFileId,pageIndex:backSingleTargetPageIdx};
+    }
+    if(!s.doubleSided){
+      document.querySelector('input[name=printMode][value=double]').checked=true;
+      onPrintModeChange();
+    }
+    if(el('dblMode').value!=='different'){
+      el('dblMode').value='different';
+      onDblModeChange();
+    }
+    // Re-set after mode change
+    if(backFile.pages.length>0){
+      backFile.pages[0].side='back';
+      backFile.pages[0].backRef={fileId:backSingleTargetFileId,pageIndex:backSingleTargetPageIdx};
+    }
+  }catch(err){alert('Could not read Back file: '+err.message);}
+  backSingleInput.value='';backSingleTargetFileId=null;backSingleTargetPageIdx=null;
+  invalidateLayout();renderFileList();
+});
+function pickBack(fid,pidx){
+  backSingleTargetFileId=fid;
+  backSingleTargetPageIdx=pidx;
+  backSingleInput.click();
+}
+
+/* === FILE LIST === */
+function renderFileList(){
+  if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
+  el('filesSection').style.display='';el('layoutSection').style.display='';
+  const s=S(),isDbl=s.doubleSided,isDblDiff=isDbl&&s.dblMode==='different';
+  let faceOpts=[];
+  if(isDblDiff)for(const f of inputFiles)for(const p of f.pages)
+    if(p.side==='face')faceOpts.push({fileId:f.id,pageIndex:p.index,label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')});
+
+  let qtyIdx=100;
+  const flatRows=[];for(const f of inputFiles)for(const p of f.pages)flatRows.push({fileId:f.id,pageIndex:p.index});
+  let html='';
+  let lastFileId=null;
+  for(let ri=0;ri<flatRows.length;ri++){
+    const row=flatRows[ri],f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
+    const p=f.pages.find(x=>x.index===row.pageIndex);if(!p)continue;
+    // File-level header for multi-page files
+    if(f.pages.length>1&&f.id!==lastFileId){
+      lastFileId=f.id;
+      const allHaveOpw=f.pages.every(pg=>pg.opw);
+      html+=`<div style="padding:6px 12px;background:#eef2ff;border-radius:8px 8px 0 0;margin-top:8px;margin-bottom:0;font-size:12px;font-weight:600;color:#3730a3;display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
+      html+=`<span>📄 ${esc(f.name)} (${f.pages.length} pages)</span>`;
+      if(allHaveOpw){
+        html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPWAll(${f.id})" style="border-color:#b91c1c;color:#b91c1c;background:#fef2f2">✕ OPW all</button>`;
+      }else{
+        html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPWAll(${f.id})">+ OPW all pages</button>`;
+      }
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickBacksAll(${f.id})" style="border-color:#6366f1;color:#3730a3;background:#eef2ff">+ Backs all pages</button>`;
+      html+=`</div>`;
+    }else if(f.pages.length<=1){lastFileId=f.id;}
+    const pgL=f.pages.length>1?` p${p.index+1}`:'';
+    const isBack=isDblDiff&&p.side==='back';
+    html+=`<div class="file-item" draggable="true" data-ri="${ri}" ondragstart="onDragStart(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">`;
+    html+=`<span class="drag-handle">&#9776;</span>`;
+    html+=`<span class="name">${esc(f.name)}${pgL}</span>`;
+    html+=`<span class="info">${p.physW.toFixed(1)}" x ${p.physH.toFixed(1)}"</span>`;
+    if(f.type==='image'&&p.dpi) html+=` <span class="info">${p.dpi} DPI</span>`;
+    if(p.hasTrim)html+=` <span class="tag tag-detect">Bleed ${fmtNum(p.bleed)}"</span>`;
+    else if(f.type==='image'&&p.bleed>0)html+=` <span class="info">Bleed ${fmtNum(p.bleed)}"</span>`;
+    html+=` <span class="info">Trim ${p.trimW.toFixed(1)}" x ${p.trimH.toFixed(1)}"</span>`;
+    if(p.diePaths) html+=` <span class="tag tag-detect">Die detected</span>`;
+    // Spot color tags
+    if(p.spotColors && p.spotColors.length){
+      for(const sc of p.spotColors){
+        const isDie = spotColorConfig.dieSpotNames.has(sc.spotName);
+        const isCrease = spotColorConfig.creaseSpotNames.has(sc.spotName);
+        if(isDie) html+=` <span class="tag tag-detect">${esc(sc.spotName)}</span>`;
+        else if(isCrease) html+=` <span class="tag tag-detect" style="background:#fef3c7;color:#92400e">${esc(sc.spotName)}</span>`;
+        else html+=` <span class="tag tag-spot">${esc(sc.spotName)}</span>`;
+      }
+    }
+    // OPW white plate
+    if(p.opw){
+      html+=` <span class="tag tag-white">OPW: ${esc(p.opw.name.substring(0,18))}</span>`;
+      html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPW(${f.id},${p.index})">x</button>`;
+    } else {
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPW(${f.id},${p.index})">+ OPW</button>`;
+    }
+    // Back upload button (only for face pages in different mode, or always when not in different mode)
+    if(!isBack){
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickBack(${f.id},${p.index})" style="border-color:#6366f1;color:#3730a3;background:#eef2ff">+ Back</button>`;
+    }
+    // Orientation
+    html+=` <select onchange="updatePage(${f.id},${p.index},'orient',this.value)">`;
+    html+=`<option value="auto" ${p.orient==='auto'?'selected':''}>Auto</option>`;
+    html+=`<option value="portrait" ${p.orient==='portrait'?'selected':''}>Port</option>`;
+    html+=`<option value="landscape" ${p.orient==='landscape'?'selected':''}>Land</option></select>`;
+    if(isDblDiff){
+      html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'side',this.value)">`;
+      html+=`<option value="face" ${p.side==='face'?'selected':''}>Face</option><option value="back" ${p.side==='back'?'selected':''}>Back</option></select>`;
+      if(p.side==='back'){
+        html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'backRef',this.value)"><option value="">--pair--</option>`;
+        for(const fo of faceOpts){const v=`${fo.fileId}-${fo.pageIndex}`;
+          html+=`<option value="${v}" ${p.backRef&&p.backRef.fileId===fo.fileId&&p.backRef.pageIndex===fo.pageIndex?'selected':''}>${esc(fo.label)}</option>`;}
+        html+=`</select> <span class="tag tag-back">BACK</span>`;
+      }else html+=` <span class="tag tag-face">FACE</span>`;
+    }
+    if(isDbl&&s.dblMode==='common')html+=` <span class="tag tag-common">+common back</span>`;
+    if(!isBack)html+=` <input type="number" class="qty-input" value="${p.qty}" min="0" max="200" tabindex="${qtyIdx++}" placeholder="qty" onchange="updatePage(${f.id},${p.index},'qty',this.value)">`;
+    else if(isDblDiff&&p.backRef){const pf=inputFiles.find(x=>x.id===p.backRef.fileId);if(pf){const pp=pf.pages.find(x=>x.index===p.backRef.pageIndex);if(pp)html+=` <span class="info">qty: ${pp.qty} (follows face)</span>`;}}
+    html+=` <button class="remove" tabindex="-1" onclick="removeFile(${f.id},${p.index})">&times;</button></div>`;
+  }
+  el('fileList').innerHTML=html;
+}
+
+function updatePage(fid,pidx,field,val){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  const p=f.pages.find(x=>x.index===pidx);if(!p)return;
+  if(field==='qty'){p.qty=Math.max(0,parseInt(val)||0);p.qtyOverride=true;}
+  else if(field==='orient'){p.orient=val;p.orientOverride=(val!==S().masterOrient);}
+  else if(field==='side'){p.side=val;if(val==='face')p.backRef=null;}
+  else if(field==='backRef'){if(val){const[a,b]=val.split('-').map(Number);p.backRef={fileId:a,pageIndex:b};}else p.backRef=null;}
+  invalidateLayout();renderFileList();
+}
+function removeFile(fid,pidx){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  if(f.pages.length<=1){for(const ff of inputFiles)for(const pp of ff.pages)if(pp.backRef&&pp.backRef.fileId===fid)pp.backRef=null;inputFiles=inputFiles.filter(x=>x.id!==fid);}
+  else f.pages=f.pages.filter(x=>x.index!==pidx);
+  invalidateLayout();renderFileList();
+}
+function invalidateLayout(){
+  sheets=[];viewSheet=0;viewSide='face';sheetPrintQty=1;
+  el('previewBox').style.display='none';el('exportRow').style.display='none';
+  el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
+  el('layoutChoices').style.display='none';
+}
+
+/* === QTY SCRUBBER === */
+// Prevent row drag when interacting with qty inputs; add drag-to-scrub
+(function(){
+  let scrubEl=null, scrubStartY=0, scrubStartVal=0, scrubDirty=false;
+  document.addEventListener('mousedown',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(!inp)return;
+    // Block the parent row's drag
+    e.stopPropagation();
+    inp.closest('[draggable]')?.setAttribute('draggable','false');
+    scrubEl=inp; scrubStartY=e.clientY; scrubStartVal=parseInt(inp.value)||0; scrubDirty=false;
+    inp.style.cursor='ns-resize';
+    document.addEventListener('mousemove',onScrubMove);
+    document.addEventListener('mouseup',onScrubUp);
+  });
+  function onScrubMove(e){
+    if(!scrubEl)return;
+    const dy=scrubStartY-e.clientY; // up = positive
+    const step=Math.round(dy/8);
+    if(Math.abs(dy)>3) scrubDirty=true;
+    if(!scrubDirty)return;
+    const nv=Math.max(0,Math.min(200,scrubStartVal+step));
+    scrubEl.value=nv;
+    scrubEl.dispatchEvent(new Event('change'));
+  }
+  function onScrubUp(e){
+    document.removeEventListener('mousemove',onScrubMove);
+    document.removeEventListener('mouseup',onScrubUp);
+    if(!scrubEl)return;
+    scrubEl.style.cursor='';
+    scrubEl.closest('.file-item')?.setAttribute('draggable','true');
+    if(!scrubDirty){
+      // Was a plain click — focus the input for typing
+      scrubEl.focus();
+    }
+    scrubEl=null;
+  }
+  // Double-click selects all text
+  document.addEventListener('dblclick',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(inp){ inp.focus(); inp.select(); }
+  });
+  // Disable scroll wheel on qty inputs
+  document.addEventListener('wheel',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(inp){ e.preventDefault(); }
+  },{passive:false});
+})();
+
+/* === DRAG SORT === */
+let dragSrcRi=null;
+function buildFlatIndex(){const r=[];for(const f of inputFiles)for(const p of f.pages)r.push({fileId:f.id,pageIndex:p.index});return r;}
+function onDragStart(e){dragSrcRi=parseInt(e.currentTarget.dataset.ri);e.dataTransfer.effectAllowed='move';e.currentTarget.style.opacity='0.4';}
+function onDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move';e.currentTarget.classList.add('drag-over');}
+function onDragLeave(e){e.currentTarget.classList.remove('drag-over');}
+function onDrop(e){
+  e.preventDefault();e.currentTarget.classList.remove('drag-over');
+  const dest=parseInt(e.currentTarget.dataset.ri);if(dragSrcRi===null||dragSrcRi===dest)return;
+  const flat=buildFlatIndex(),src=flat[dragSrcRi];flat.splice(dragSrcRi,1);flat.splice(dest,0,src);
+  const nf=[],seen=new Set();
+  for(const row of flat){const f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
+    if(!seen.has(f.id)){seen.add(f.id);const pages=flat.filter(r=>r.fileId===f.id).map(r=>f.pages.find(p=>p.index===r.pageIndex)).filter(Boolean);nf.push({...f,pages});}}
+  inputFiles=nf;dragSrcRi=null;invalidateLayout();renderFileList();
+}
+
+/* === ORIENTATION === */
+function resolveOrientation(p,sW,sH,forceRotated){
+  let orient=p.orient||'auto';const pw=p.physW,ph=p.physH;
+  if(forceRotated!==undefined) return forceRotated?{w:ph,h:pw,rotated:true}:{w:pw,h:ph,rotated:false};
+  if(orient==='portrait')return ph>=pw?{w:pw,h:ph,rotated:false}:{w:ph,h:pw,rotated:true};
+  if(orient==='landscape')return pw>=ph?{w:pw,h:ph,rotated:false}:{w:ph,h:pw,rotated:true};
+  // orient==='auto' — caller will try both and pick best
+  return{w:pw,h:ph,rotated:false};
+}
+
+/* === PIECES === */
+function collectPieces(forceRotated){
+  const s=S(),isDblDiff=s.doubleSided&&s.dblMode==='different',items=[];
+  for(const f of inputFiles)for(const p of f.pages){
+    if(isDblDiff&&p.side==='back')continue;
+    const isAuto = !p.orient || p.orient==='auto';
+    const ori=resolveOrientation(p,s.stockW,s.stockH, isAuto ? forceRotated : undefined);
+    const trimW=ori.rotated?p.trimH:p.trimW,trimH=ori.rotated?p.trimW:p.trimH;
+    for(let q=0;q<p.qty;q++)items.push({
+      fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:p.bleed,rotated:ori.rotated,
+      canFlip:isAuto, physW:p.physW, physH:p.physH, trimWOrig:p.trimW, trimHOrig:p.trimH,
+      srcW:p.srcW||p.physW, srcH:p.srcH||p.physH, srcBleed:p.srcBleed!==undefined?p.srcBleed:p.bleed,
+      diePaths:p.diePaths||null,
+      label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')+(p.qty>1?` #${q+1}`:''),
+    });
+  }
+  return items;
+}
+
+/* === PACKING === */
+/* Flip an item to its alternate orientation */
+function flipItem(it){
+  return {...it, w:it.h, h:it.w, trimW:it.trimH, trimH:it.trimW, rotated:!it.rotated};
+}
+/* Simple shelf packer — uses TRIM dims for spacing, physW/physH for the placed item */
+function shelfPack(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>b.trimH-a.trimH||b.trimW-a.trimW);
+  const placed=[],unplaced=[];let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    if(it.trimW>bW+.001||it.trimH>bH+.001){unplaced.push(it);continue;}
+    if(cX+it.trimW>bW+.001){cX=0;cY+=rH+gut;rH=0;}
+    if(cY+it.trimH>bH+.001){unplaced.push(it);continue;}
+    // Place so trim is at (cX,cY); bleed extends outward by p.bleed
+    placed.push({...it,x:cX-it.bleed,y:cY-it.bleed});
+    cX+=it.trimW+gut;rH=Math.max(rH,it.trimH);
+  }
+  return{placed,unplaced};
+}
+/* Mixed-orientation shelf packer: tries both orientations per shelf row */
+function mixedShelfPack(items,bW,bH,gut){
+  const sizeKey=it=>{const a=Math.min(it.trimW,it.trimH),b=Math.max(it.trimW,it.trimH);return `${a.toFixed(4)}x${b.toFixed(4)}`;};
+  const hasFlippable=items.some(it=>it.canFlip&&Math.abs(it.trimW-it.trimH)>.01);
+  if(!hasFlippable) return shelfPack(items,bW,bH,gut);
+
+  const groups=new Map();
+  for(const it of items){
+    const k=sizeKey(it);
+    if(!groups.has(k))groups.set(k,{items:[],sample:it});
+    groups.get(k).items.push(it);
+  }
+  // If all items are same size and flippable → analytic mixed-row approach
+  if(groups.size===1){
+    const g=[...groups.values()][0], sample=g.sample, count=g.items.length;
+    const tA=Math.min(sample.trimW,sample.trimH), tB=Math.max(sample.trimW,sample.trimH);
+    const bl=sample.bleed;
+    // Portrait = tA wide × tB tall; Landscape = tB wide × tA tall (trim dims)
+    let bestPlaced=[], bestScore=0;
+    const maxPRows=Math.floor((bH+gut)/(tB+gut));
+    const maxLRows=Math.floor((bH+gut)/(tA+gut));
+    for(let pRows=0;pRows<=maxPRows;pRows++){
+      const usedH=pRows>0?pRows*tB+(pRows-1)*gut:0;
+      const remH=bH-usedH-(pRows>0?gut:0);
+      const lRows=remH>=tA?Math.floor((remH+gut)/(tA+gut)):0;
+      const pCols=Math.floor((bW+gut)/(tA+gut));
+      const lCols=Math.floor((bW+gut)/(tB+gut));
+      const total=pRows*pCols+lRows*lCols;
+      if(total>bestScore){
+        bestScore=total;
+        const pl=[];let idx=0;
+        for(let r=0;r<pRows&&idx<count;r++){
+          const ty=r*(tB+gut);
+          for(let c=0;c<pCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW<=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tA+gut)-bl, y:ty-bl});
+          }
+        }
+        const lStartY=pRows>0?pRows*(tB+gut):0;
+        for(let r=0;r<lRows&&idx<count;r++){
+          const ty=lStartY+r*(tA+gut);
+          for(let c=0;c<lCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW>=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tB+gut)-bl, y:ty-bl});
+          }
+        }
+        bestPlaced=pl;
+      }
+    }
+    // Also try landscape rows first (top) then portrait rows (bottom)
+    for(let lRows=0;lRows<=maxLRows;lRows++){
+      const usedH=lRows>0?lRows*tA+(lRows-1)*gut:0;
+      const remH=bH-usedH-(lRows>0?gut:0);
+      const pRows=remH>=tB?Math.floor((remH+gut)/(tB+gut)):0;
+      const pCols=Math.floor((bW+gut)/(tA+gut));
+      const lCols=Math.floor((bW+gut)/(tB+gut));
+      const total=pRows*pCols+lRows*lCols;
+      if(total>bestScore){
+        bestScore=total;
+        const pl=[];let idx=0;
+        for(let r=0;r<lRows&&idx<count;r++){
+          const ty=r*(tA+gut);
+          for(let c=0;c<lCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW>=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tB+gut)-bl, y:ty-bl});
+          }
+        }
+        const pStartY=lRows>0?lRows*(tA+gut):0;
+        for(let r=0;r<pRows&&idx<count;r++){
+          const ty=pStartY+r*(tB+gut);
+          for(let c=0;c<pCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW<=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tA+gut)-bl, y:ty-bl});
+          }
+        }
+        bestPlaced=pl;
+      }
+    }
+    if(bestPlaced.length>0){
+      const unplaced=g.items.slice(bestPlaced.length);
+      return{placed:bestPlaced,unplaced};
+    }
+  }
+  // Fallback for mixed-size items: per-item rotation shelf packer
+  const sorted=[...items].sort((a,b)=>{
+    const aMax=Math.max(a.trimW,a.trimH),bMax=Math.max(b.trimW,b.trimH);return bMax-aMax||Math.min(b.trimW,b.trimH)-Math.min(a.trimW,a.trimH);
+  });
+  const placed=[],unplaced=[];let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    const alt=it.canFlip?flipItem(it):null;
+    let use=it,fits=false;
+    if(use.trimW<=bW+.001&&use.trimH<=bH+.001){
+      if(cX+use.trimW<=bW+.001&&cY+use.trimH<=bH+.001)fits=true;
+      else if(cY+use.trimH<=bH+.001){cX=0;cY+=rH+gut;rH=0;if(cY+use.trimH<=bH+.001)fits=true;}
+    }
+    if(!fits&&alt&&alt.trimW<=bW+.001&&alt.trimH<=bH+.001){
+      use=alt;fits=false;
+      if(cX+use.trimW<=bW+.001&&cY+use.trimH<=bH+.001)fits=true;
+      else{cX=0;cY+=rH+gut;rH=0;if(cX+use.trimW<=bW+.001&&cY+use.trimH<=bH+.001)fits=true;}
+    }
+    if(!fits){unplaced.push(it);continue;}
+    placed.push({...use,x:cX-use.bleed,y:cY-use.bleed});
+    cX+=use.trimW+gut;rH=Math.max(rH,use.trimH);
+  }
+  return{placed,unplaced};
+}
+function packSheet(items,bW,bH,gut){
+  return mixedShelfPack(items,bW,bH,gut);
+}
+
+/* === ZONE SPLIT PACKER === */
+function packShelfSimple(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>b.h-a.h||b.w-a.w);
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    if(it.w>bW+.001||it.h>bH+.001){unplaced.push(it);continue;}
+    if(cX+it.w>bW+.001){cX=0;cY+=rH+gut;rH=0;}
+    if(cY+it.h>bH+.001){unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw:it.w,ph:it.h});
+    cX+=it.w+gut;rH=Math.max(rH,it.h);
+  }
+  return{placed,unplaced};
+}
+
+function packShelfRotate(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>Math.max(b.w,b.h)-Math.max(a.w,a.h));
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    const fitsR=(w,h)=>(cX+w<=bW+.001)&&(cY+h<=bH+.001);
+    const fitsNR=(w,h)=>(w<=bW+.001)&&(cY+rH+gut+h<=bH+.001);
+    let pw,ph,rot=false;
+    if(fitsR(it.w,it.h)){pw=it.w;ph=it.h;}
+    else if(fitsR(it.h,it.w)){pw=it.h;ph=it.w;rot=true;}
+    else if(fitsNR(it.w,it.h)){cX=0;cY+=rH+gut;rH=0;pw=it.w;ph=it.h;}
+    else if(fitsNR(it.h,it.w)){cX=0;cY+=rH+gut;rH=0;pw=it.h;ph=it.w;rot=true;}
+    else{unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw,ph,rotated:rot});
+    cX+=pw+gut;rH=Math.max(rH,ph);
+  }
+  return{placed,unplaced};
+}
+
+function packZoneSplit(items,binW,binH,gut){
+  // Group by unique size
+  const groups=new Map();
+  for(const it of items){
+    const key=Math.min(it.w,it.h).toFixed(2)+'_'+Math.max(it.w,it.h).toFixed(2);
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(it);
+  }
+  const groupList=[...groups.values()];
+  if(groupList.length<2) return null;
+
+  let bestResult=null,bestCount=0,bestWaste=Infinity;
+  const perms=groupList.length<=5?permute(groupList):[groupList];
+
+  for(const perm of perms){
+    for(const[bW,bH]of[[binW,binH],[binH,binW]]){
+      const result=tryZoneOrder(perm,bW,bH,gut);
+      const waste=calcWaste(result.placed,bW,bH);
+      if(result.placed.length>bestCount||(result.placed.length===bestCount&&waste<bestWaste)){
+        bestCount=result.placed.length;bestWaste=waste;
+        bestResult={placed:result.placed,unplaced:result.unplaced,stockW:bW,stockH:bH};
+      }
+    }
+  }
+  return bestResult;
+}
+
+function tryZoneOrder(groups,binW,binH,gut){
+  let usedH=0;
+  const allPlaced=[],allUnplaced=[];
+  for(const group of groups){
+    const remainH=binH-usedH;
+    if(remainH<=0){allUnplaced.push(...group);continue;}
+    let bestPack=null,bestN=0;
+    for(const rotate of[false,true]){
+      const oriented=group.map(it=>rotate?{...it,w:it.h,h:it.w,pw:it.h,ph:it.w,rotated:true}:{...it,pw:it.w,ph:it.h,rotated:false});
+      const pack=packShelfSimple(oriented,binW,remainH,gut);
+      if(pack.placed.length>bestN){bestN=pack.placed.length;bestPack=pack;}
+    }
+    if(bestPack&&bestPack.placed.length>0){
+      let maxUsed=0;
+      for(const p of bestPack.placed){p.y+=usedH;maxUsed=Math.max(maxUsed,(p.y-usedH)+p.ph);}
+      allPlaced.push(...bestPack.placed);
+      allUnplaced.push(...bestPack.unplaced);
+      usedH+=maxUsed+gut;
+    } else allUnplaced.push(...group);
+  }
+  return{placed:allPlaced,unplaced:allUnplaced};
+}
+
+function calcWaste(placed,bW,bH){
+  let a=0;for(const p of placed)a+=(p.pw||p.w)*(p.ph||p.h);
+  return 1-a/(bW*bH);
+}
+
+function permute(arr){
+  if(arr.length<=1)return[arr];
+  const r=[];
+  for(let i=0;i<arr.length;i++){
+    const rest=[...arr.slice(0,i),...arr.slice(i+1)];
+    for(const p of permute(rest))r.push([arr[i],...p]);
+  }
+  return r;
+}
+
+function centerPlacements(pl,bW,bH){
+  if(!pl.length)return;
+  // Compute extent using trim positions (p.x+bleed is trim left, p.x+bleed+trimW is trim right)
+  let mX=0,mY=0;
+  for(const p of pl){mX=Math.max(mX,p.x+p.bleed+p.trimW);mY=Math.max(mY,p.y+p.bleed+p.trimH);}
+  const ox=(bW-mX)/2,oy=(mY<bH*0.5)?0:(bH-mY)/2;
+  for(const p of pl){p.x+=ox;p.y+=oy;}
+}
+
+function arrangeLayout(){
+  const s=S(),cW=s.stockW-2*s.margin,cH=s.stockH-2*s.margin;
+  applyBleedOverride();
+
+  // Collect pieces in both orientations
+  const itemsNormal=collectPieces(false);
+  const itemsRotated=collectPieces(true);
+  const hasAuto=inputFiles.some(f=>f.pages.some(p=>!p.orient||p.orient==='auto'));
+
+  if(!itemsNormal.length){el('layoutInfo').textContent='No pieces.';return;}
+
+  // Run multiple strategies, collect results
+  const candidates=[];
+
+  function tryStrategy(name,items,bW,bH){
+    const result=packSheet(items,bW,bH,s.gutter);
+    if(result.placed.length>0){
+      const pl=[...result.placed];
+      centerPlacements(pl,bW,bH);
+      const waste=calcWaste(pl,bW,bH);
+      candidates.push({name,placed:pl,unplaced:result.unplaced,stockW:bW+2*s.margin,stockH:bH+2*s.margin,contentW:bW,contentH:bH,waste,count:pl.length});
+    }
+  }
+
+  // Shelf packer (current) — both orientations, both item rotations
+  tryStrategy('Shelf',itemsNormal,cW,cH);
+  tryStrategy('Shelf (stock flipped)',itemsNormal,cH,cW);
+  if(hasAuto){
+    tryStrategy('Shelf (rotated)',itemsRotated,cW,cH);
+    tryStrategy('Shelf (rotated + flipped)',itemsRotated,cH,cW);
+  }
+
+  // Shelf with per-piece rotation
+  for(const[bW,bH,label]of[[cW,cH,''],[cH,cW,' flipped']]){
+    const sr=packShelfRotate(itemsNormal,bW,bH,s.gutter);
+    if(sr.placed.length>0){
+      const pl=[...sr.placed];
+      centerPlacements(pl,bW,bH);
+      candidates.push({name:'Shelf+Rotate'+label,placed:pl,unplaced:sr.unplaced,stockW:bW+2*s.margin,stockH:bH+2*s.margin,contentW:bW,contentH:bH,waste:calcWaste(pl,bW,bH),count:pl.length});
+    }
+  }
+
+  // Zone split
+  const zr=packZoneSplit(itemsNormal,cW,cH,s.gutter);
+  if(zr&&zr.placed.length>0){
+    const pl=[...zr.placed];
+    const zbW=zr.stockW,zbH=zr.stockH;
+    centerPlacements(pl,zbW,zbH);
+    candidates.push({name:'Zone Split',placed:pl,unplaced:zr.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
+  }
+  if(hasAuto){
+    const zr2=packZoneSplit(itemsRotated,cW,cH,s.gutter);
+    if(zr2&&zr2.placed.length>0){
+      const pl=[...zr2.placed];
+      const zbW=zr2.stockW,zbH=zr2.stockH;
+      centerPlacements(pl,zbW,zbH);
+      candidates.push({name:'Zone Split (rotated)',placed:pl,unplaced:zr2.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
+    }
+  }
+
+  if(!candidates.length){el('layoutInfo').textContent='No pieces fit on stock.';return;}
+
+  // Sort by fewest unplaced first, then most per sheet, then least waste
+  candidates.sort((a,b)=>(a.unplaced.length-b.unplaced.length)||b.count-a.count||(a.waste-b.waste));
+  const seen=new Set();
+  const unique=[];
+  for(const c of candidates){
+    const sig=c.placed.map(p=>Math.round(p.x*10)+','+Math.round(p.y*10)+','+Math.round((p.pw||p.w)*10)+','+Math.round((p.ph||p.h)*10)).sort().join('|');
+    if(!seen.has(sig)){seen.add(sig);unique.push(c);}
+  }
+
+  // Show top 4 as clickable choices
+  const top=unique.slice(0,4);
+  const choiceGrid=el('choiceGrid');
+  choiceGrid.innerHTML='';
+  el('layoutChoices').style.display='';
+
+  // Store candidates globally for selection
+  window._layoutCandidates=top;
+
+  top.forEach((cand,i)=>{
+    const div=document.createElement('div');
+    div.className='layout-choice'+(i===0?' selected':'');
+    div.onclick=()=>selectLayout(i);
+
+    const title=document.createElement('div');
+    title.className='lc-title';
+    title.textContent=cand.name;
+    div.appendChild(title);
+
+    // Draw thumbnail
+    const canvas=document.createElement('canvas');
+    drawChoiceThumb(canvas,cand);
+    div.appendChild(canvas);
+
+    const info=document.createElement('div');
+    info.className='lc-info';
+    const pct=((1-cand.waste)*100).toFixed(1);
+    const unp=cand.unplaced?cand.unplaced.length:0;
+    const totalItems=cand.count+unp;
+    const sheetsNeeded=unp>0?Math.ceil(totalItems/cand.count):1;
+    let infoText=`${cand.count} up · ${pct}% util · ${cand.stockW.toFixed(0)}"×${cand.stockH.toFixed(0)}"`;
+    if(sheetsNeeded>1) infoText+=` · ${sheetsNeeded} sheets`;
+    if(unp>0) infoText+=` · ${unp} overflow`;
+    info.textContent=infoText;
+    div.appendChild(info);
+
+    if(i===0){
+      const best=document.createElement('div');
+      best.className='lc-best';best.textContent='★ BEST';
+      div.appendChild(best);
+    }
+
+    choiceGrid.appendChild(div);
+  });
+
+  // Auto-select the best one
+  selectLayout(0);
+}
+
+function drawChoiceThumb(canvas,cand){
+  const sW=cand.stockW,sH=cand.stockH,m=MARGIN;
+  const maxW=200,maxH=150;
+  const scale=Math.min(maxW/sW,maxH/sH);
+  canvas.width=Math.ceil(sW*scale);canvas.height=Math.ceil(sH*scale);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d2d2d7';ctx.strokeRect(0,0,canvas.width-1,canvas.height-1);
+
+  const colors=['#dbeafe','#fef3c7','#d1fae5','#fde8e8','#e0e7ff','#fce7f3'];
+  const sizeKeys=new Map();let ci=0;
+  for(const p of cand.placed){
+    const key=Math.min(p.w,p.h).toFixed(1)+'_'+Math.max(p.w,p.h).toFixed(1);
+    if(!sizeKeys.has(key))sizeKeys.set(key,colors[ci++%colors.length]);
+  }
+  for(const p of cand.placed){
+    const pw=p.pw||p.w,ph=p.ph||p.h;
+    const x=(m+p.x)*scale,y=(m+p.y)*scale,w=pw*scale,h=ph*scale;
+    const key=Math.min(p.w,p.h).toFixed(1)+'_'+Math.max(p.w,p.h).toFixed(1);
+    ctx.fillStyle=sizeKeys.get(key)||'#ddd';
+    ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle='#0071e3';ctx.lineWidth=0.5;
+    ctx.strokeRect(x,y,w,h);
+  }
+}
+
+function selectLayout(idx){
+  const cand=window._layoutCandidates[idx];
+  if(!cand)return;
+
+  // Highlight selected card
+  const cards=el('choiceGrid').querySelectorAll('.layout-choice');
+  cards.forEach((c,i)=>c.className='layout-choice'+(i===idx?' selected':''));
+
+  const s=S();
+  // Update stock dims to match chosen layout
+  s.stockW=cand.stockW;s.stockH=cand.stockH;
+  el('stockW').value=cand.stockW;el('stockH').value=cand.stockH;
+
+  // Build sheets — pack overflow onto additional sheets
+  const totalNeeded=cand.placed.length + (cand.unplaced?cand.unplaced.length:0);
+  const perSheet=cand.count;
+  const contentW=cand.contentW, contentH=cand.contentH;
+
+  sheets=[{placements:cand.placed,printQty:1}];
+  let unplacedPool=cand.unplaced?[...cand.unplaced]:[];
+  while(unplacedPool.length>0){
+    const result=packSheet(unplacedPool,contentW,contentH,s.gutter);
+    if(result.placed.length===0)break; // nothing fits, avoid infinite loop
+    const pl=[...result.placed];
+    centerPlacements(pl,contentW,contentH);
+    sheets.push({placements:pl,printQty:1});
+    unplacedPool=result.unplaced;
+  }
+  sheetPrintQty=1;
+
+  viewSheet=0;viewSide='face';drawPreview();
+
+  const totalPlaced=sheets.reduce((sum,sh)=>sum+sh.placements.length,0);
+  el('layoutInfo').textContent=`${perSheet} up per sheet · ${sheets.length} sheet${sheets.length>1?'s':''}`+(s.doubleSided?' | Double-sided':'');
+  const cd=el('sheetCalc');cd.style.display='';
+  if(sheets.length===1){
+    cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print 1 time</b> = <b>${totalPlaced}</b> total`;
+  }else{
+    cd.innerHTML=`<b>${totalPlaced}</b> total across <b>${sheets.length} sheets</b> (${perSheet} per sheet)`+(unplacedPool.length>0?` · <span style="color:#b91c1c">${unplacedPool.length} didn't fit</span>`:'');
+  }
+
+  el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';
+  const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
+  el('opwBtn').style.display=hasOPW?'':'none';
+  const hasDiePaths=sheets.some(sh=>sh.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
+  const allHaveDie=sheets.length>0&&sheets.every(sh=>sh.placements.every(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
+  // Show Print+Die when there are any die paths or when perimeter dies will be generated
+  el('printDieBtn').style.display=(hasDiePaths||sheets.length>0)?'':'none';
+  // Cut button always shows (generates perimeter cuts for files without die paths)
+  el('cutBtn').style.display='';
+}
+
+/* === MARKS === */
+function getRegDots(W,H){const i=.375,g=3.0;return[{x:i,y:i},{x:i+g,y:i},{x:W-i,y:i},{x:i,y:H-i},{x:W-i,y:H-i}];}
+function getHickeys(W,H){
+  const sz=HICKEY_SIZE,dp=HICKEY_DEPTH,off=HICKEY_OFFSET;
+  return[
+    {x1:off+sz/2,y1:0,x2:off,y2:dp,x3:off+sz,y3:dp},
+    {x1:0,y1:off+sz/2,x2:dp,y2:off,x3:dp,y3:off+sz},
+    {x1:W,y1:off+sz/2,x2:W-dp,y2:off,x3:W-dp,y3:off+sz},
+    {x1:0,y1:H-off-sz/2,x2:dp,y2:H-off-sz,x3:dp,y3:H-off},
+    {x1:off+sz/2,y1:H,x2:off,y2:H-dp,x3:off+sz,y3:H-dp},
+    {x1:W-off-sz/2,y1:H,x2:W-off-sz,y2:H-dp,x3:W-off,y3:H-dp},
+    {x1:W,y1:H-off-sz/2,x2:W-dp,y2:H-off-sz,x3:W-dp,y3:H-off},
+  ];
+}
+
+/* === PREVIEW === */
+function drawPreview(){
+  const s=S(),canvas=el('preview');if(!sheets.length){canvas.width=0;return;}
+  const sheet=sheets[viewSheet]||sheets[0],maxW=680,maxH=420,scale=Math.min(maxW/s.stockW,maxH/s.stockH);
+  canvas.width=Math.ceil(s.stockW*scale);canvas.height=Math.ceil(s.stockH*scale);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d2d2d7';ctx.setLineDash([4,3]);ctx.strokeRect(s.margin*scale,s.margin*scale,(s.stockW-2*s.margin)*scale,(s.stockH-2*s.margin)*scale);ctx.setLineDash([]);
+  for(const p of sheet.placements){
+    let px,py;
+    if(viewSide==='back'){
+      const trimX=s.margin+p.x+p.bleed, trimY=s.margin+p.y+p.bleed;
+      if(s.flipAxis==='horizontal'){const backTrimY=s.stockH-trimY-p.trimH;px=trimX-p.bleed;py=backTrimY-p.bleed;}
+      else{const backTrimX=s.stockW-trimX-p.trimW;px=backTrimX-p.bleed;py=trimY-p.bleed;}
+    }
+    else{px=s.margin+p.x;py=s.margin+p.y;}
+    const x=px*scale,y=py*scale,w=p.w*scale,h=p.h*scale;
+    ctx.fillStyle=viewSide==='back'?'#fef2f2':'#eff6ff';ctx.fillRect(x,y,w,h);
+    if(p.bleed>0){ctx.strokeStyle='#e040a0';ctx.lineWidth=1.5;ctx.strokeRect(x+p.bleed*scale,y+p.bleed*scale,p.trimW*scale,p.trimH*scale);}
+    else{ctx.strokeStyle='#0071e3';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);}
+    ctx.fillStyle='#666';ctx.font=`${Math.max(7,Math.min(11,w/12))}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    let lbl=viewSide==='back'?'(B) '+p.label:p.label;if(lbl.length>24)lbl=lbl.substring(0,22)+'...';
+    ctx.fillText(lbl,x+w/2,y+h/2);
+  }
+  ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#1d1d1f';for(const h of getHickeys(s.stockW,s.stockH)){ctx.beginPath();ctx.moveTo(h.x1*scale,h.y1*scale);ctx.lineTo(h.x2*scale,h.y2*scale);ctx.lineTo(h.x3*scale,h.y3*scale);ctx.closePath();ctx.fill();}
+  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,9*scale)}px sans-serif`;ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),(s.margin+4.0)*scale,0.1*scale);
+  const nav=el('sheetNav');let nh='';
+  if(sheets.length>1)nh+=`Sheet ${viewSheet+1}/${sheets.length} <button onclick="prevSheet()">&#9664;</button><button onclick="nextSheet()">&#9654;</button>`;
+  if(s.doubleSided)nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
+  nav.innerHTML=nh;
+}
+
+function buildSlug(s,si,side){
+  const p=[];if(s.jobName)p.push(s.jobName);if(s.jobNumber)p.push('#'+s.jobNumber);if(s.stockName)p.push(s.stockName);
+  if(s.doubleSided)p.push(side+' -- Flip '+s.flipAxis);
+  const pq=sheets[si]?sheets[si].printQty||1:sheetPrintQty;
+  p.push('Print '+pq+' times');
+  if(sheets.length>1)p.push('Sheet '+(si+1)+' of '+sheets.length);
+  return p.join('  |  ');
+}
+function prevSheet(){if(viewSheet>0){viewSheet--;drawPreview();}}
+function nextSheet(){if(viewSheet<sheets.length-1){viewSheet++;drawPreview();}}
+function toggleSide(){viewSide=viewSide==='face'?'back':'face';drawPreview();}
+
+function findBackSource(p){
+  const s=S();if(!s.doubleSided)return null;
+  if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
+  if(s.dblMode==='common')return commonBackData?{common:true}:null;
+  // "different" mode: backRef is stored on the BACK page pointing to the face.
+  for(const f of inputFiles)for(const pg of f.pages){
+    if(pg.side==='back'&&pg.backRef&&pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
+      return{fileId:f.id,pageIndex:pg.index};
+    }
+  }
+  return null;
+}
+
+/* === EXPORT PRINT PDF === */
+async function exportPrintPDF(){
+  const btn=el('printBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    const cache=new Map(),used=new Set();
+    for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+    for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){const sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}}
+      else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
+    // Embed common back if needed
+    let commonEmbed=null;
+    if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
+      if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
+      else{let e;if(commonBackData.mimeType==='image/jpeg')e=await outDoc.embedJpg(commonBackData.bytes);else e=await outDoc.embedPng(commonBackData.bytes);commonEmbed={ref:e,kind:'image'};}
+    }
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
+      if(s.doubleSided){
+        // For "same" mode, check if layout is symmetric across flip axis — if so, skip back page
+        let needsBack=true;
+        if(s.dblMode==='same'){
+          const pl=sheet.placements, cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
+          const allSameContent=pl.every(p=>p.fileId===pl[0].fileId&&p.pageIndex===pl[0].pageIndex);
+          if(allSameContent){
+            // All same content — check positional symmetry across flip axis
+            const tol=0.1;
+            if(s.flipAxis==='horizontal'){
+              needsBack=!pl.every(p=>{const trimY=p.y+p.bleed;const mirrorY=cH-trimY-p.trimH;return pl.some(q=>Math.abs((q.y+q.bleed)-mirrorY)<tol&&Math.abs((q.x+q.bleed)-(p.x+p.bleed))<tol);});
+            }else{
+              needsBack=!pl.every(p=>{const trimX=p.x+p.bleed;const mirrorX=cW-trimX-p.trimW;return pl.some(q=>Math.abs((q.x+q.bleed)-mirrorX)<tol&&Math.abs((q.y+q.bleed)-(p.y+p.bleed))<tol);});
+            }
+          }
+        }
+        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back');}
+      }
+    }
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_Print.pdf');
+  }catch(err){alert('Export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download Print PDF';
+}
+
+function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
+  for(const p of sheet.placements){
+    let c;
+    if(side==='back'){
+      const bk=findBackSource(p);if(!bk)continue;
+      if(bk.common){c=commonEmbed;if(!c)continue;}
+      else{c=cache.get(`${bk.fileId}-${bk.pageIndex}`);if(!c)continue;}
+    }else{c=cache.get(`${p.fileId}-${p.pageIndex}`);if(!c)continue;}
+    const w=p.w*PTS,h=p.h*PTS;
+    if(side==='face'){
+      const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+      drawItem(page,c,x,y,p,Wp,Hp);
+    }else{
+      // Back side: reposition for flip, rotate content 180° so art reads right-side-up
+      // when the sheet is flipped like a book
+      const trimX=(s.margin+p.x+p.bleed)*PTS, trimY=(s.margin+p.y+p.bleed)*PTS;
+      const trimW=p.trimW*PTS, trimH=p.trimH*PTS;
+      let bx,by;
+      if(s.flipAxis==='horizontal'){
+        // Top/Bottom flip: trim X stays, trim Y mirrors
+        const backTrimY=Hp-trimY-trimH;
+        bx=trimX-p.bleed*PTS; by=backTrimY-p.bleed*PTS;
+      }else{
+        // Left/Right flip: trim X mirrors, trim Y stays
+        const backTrimX=Wp-trimX-trimW;
+        bx=backTrimX-p.bleed*PTS; by=Hp-trimY-trimH-p.bleed*PTS;
+      }
+      drawItem(page,c,bx,by,p,Wp,Hp, s.flipAxis==='vertical' ? p.rotated : !p.rotated);
+    }
+  }
+}
+
+function drawItem(page,c,x,y,p,Wp,Hp,rotate180){
+  const w=p.w*PTS,h=p.h*PTS;
+  // Clip to the user's bleed box (trim + user bleed on each side)
+  page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
+  // For back pages: rotate 180° around the item center so art reads right-side-up after sheet flip
+  if(rotate180){
+    const cx=x+w/2, cy=y+h/2;
+    // Rotate 180°: cos(180)=-1, sin(180)=0 → matrix [-1,0,0,-1,2cx,2cy]
+    page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1,2*cx,2*cy));
+  }
+  // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
+  const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
+  // Offset to align trim: source bleed may differ from user bleed
+  const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
+  const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
+  if(p.rotated){
+    // Draw at native source dimensions — the CTM rotation handles the orientation
+    // swap. Passing swapped dims causes non-uniform scaling (scrunching).
+    const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
+    const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
+    page.pushOperators(
+      PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy),
+    );
+    if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+    else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+  } else {
+    if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+    else page.drawImage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+  }
+  page.pushOperators(PDFLib.popGraphicsState());
+}
+
+function placeMarks(page,s,Wp,Hp,font,si,sideLabel){
+  const black=PDFLib.cmyk(0,0,0,1);
+  for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+  for(const h of getHickeys(s.stockW,s.stockH)){
+    page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
+  }
+  if(s.doubleSided){
+    const ax=(s.stockW-s.margin-0.5)*PTS,ay=0.45*PTS-5,sh=16,hw=5,hl=8;
+    if(s.flipAxis==='horizontal'){
+      page.drawSvgPath(`M ${ax} ${ay-sh} L ${ax} ${ay+sh}`,{x:0,y:Hp,borderColor:black,borderWidth:2});
+      page.drawSvgPath(`M ${ax} ${ay+sh+hl} L ${ax-hw} ${ay+sh} L ${ax+hw} ${ay+sh} Z`,{x:0,y:Hp,color:black});
+      page.drawSvgPath(`M ${ax} ${ay-sh-hl} L ${ax-hw} ${ay-sh} L ${ax+hw} ${ay-sh} Z`,{x:0,y:Hp,color:black});
+    }else{
+      page.drawSvgPath(`M ${ax-sh} ${ay} L ${ax+sh} ${ay}`,{x:0,y:Hp,borderColor:black,borderWidth:2});
+      page.drawSvgPath(`M ${ax+sh+hl} ${ay} L ${ax+sh} ${ay+hw} L ${ax+sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
+      page.drawSvgPath(`M ${ax-sh-hl} ${ay} L ${ax-sh} ${ay+hw} L ${ax-sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
+    }
+  }
+  page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-0.45*PTS,size:20,font,color:black});
+}
+
+/* === EXPORT OPW PDF === */
+async function exportOPWPDF(){
+  const btn=el('opwBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+    // Embed OPW sources — keyed by fileId-pageIndex, same as process
+    const opwCache=new Map();
+    for(const f of inputFiles)for(const p of f.pages){
+      if(!p.opw)continue;
+      const key=`${f.id}-${p.index}`;
+      if(p.opw.type==='pdf'){
+        const sd=await PDFLib.PDFDocument.load(p.opw.bytes,{ignoreEncryption:true});
+        const opwPageIdx=p.opw.pageIndex||0;
+        const[e]=await outDoc.embedPages([sd.getPages()[opwPageIdx]]);
+        opwCache.set(key,{ref:e,kind:'page'});
+      }else{
+        let e;
+        if(p.opw.mimeType==='image/jpeg'||p.opw.mimeType==='image/jpg')e=await outDoc.embedJpg(p.opw.bytes);
+        else e=await outDoc.embedPng(p.opw.bytes);
+        opwCache.set(key,{ref:e,kind:'image'});
+      }
+    }
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const pg=outDoc.addPage([Wp,Hp]);
+
+      // Place OPW plates at identical positions to process file
+      for(const p of sheet.placements){
+        const key=`${p.fileId}-${p.pageIndex}`;
+        const c=opwCache.get(key);
+        if(!c)continue;
+        const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+        drawItem(pg,c,x,y,p,Wp,Hp);
+      }
+
+      // Same marks as process sheet (reg dots, hickeys, slug)
+      placeMarks(pg,s,Wp,Hp,fontB,si,'OPW');
+    }
+
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_OPW.pdf');
+  }catch(err){alert('OPW export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download OPW PDF';
+}
+
+/* === EXPORT CUT PDF === */
+function exportCutPDF(){
+  const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+  const sd=sheets.map(sheet=>{
+    const cuts=[];
+    for(const p of sheet.placements){
+      const posX=(s.margin+p.x)*PTS;
+      const posY=Hp-(s.margin+p.y+p.h)*PTS;
+      const pw=p.w*PTS, ph=p.h*PTS;
+      if(p.diePaths){
+        // Use extracted die line paths, translated to imposed position
+        // Source coords are in the page's own coordinate system (bottom-left origin)
+        // When the piece is rotated, rotate die path coords to match
+        const srcW=p.diePaths.pageW, srcH=p.diePaths.pageH;
+        let effSrcW=srcW, effSrcH=srcH;
+        if(p.rotated){ effSrcW=srcH; effSrcH=srcW; }
+        const scaleX=pw/effSrcW, scaleY=ph/effSrcH;
+        for(const path of p.diePaths.paths){
+          const translated=translateDiePath(path, posX, posY, scaleX, scaleY, effSrcH, ph, p.rotated, srcW);
+          cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY)});
+        }
+      } else {
+        // Fall back to rectangular cut from trim or full image edge
+        const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
+        const hasSrcBleed = srcBl > 0.001;
+        let cutX, cutY, cutW, cutH;
+        if(hasSrcBleed){
+          cutX=(s.margin+p.x+p.bleed)*PTS;
+          cutY=Hp-(s.margin+p.y+p.bleed+p.trimH)*PTS;
+          cutW=p.trimW*PTS; cutH=p.trimH*PTS;
+        } else {
+          cutX=(s.margin+p.x)*PTS;
+          cutY=Hp-(s.margin+p.y+p.h)*PTS;
+          cutW=p.w*PTS; cutH=p.h*PTS;
+        }
+        cuts.push({type:'rect', x:cutX, y:cutY, w:cutW, h:cutH});
+      }
+    }
+    const dots=getRegDots(s.stockW,s.stockH).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
+    return{cuts,dots};
+  });
+  download(buildCutPDF(sd,Wp,Hp),fileName(s)+'_Cut.pdf');
+}
+
+function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, rotated, origSrcW){
+  // Transform path ops from source page coords to imposed position
+  // Source: bottom-left origin, coords relative to page
+  // Destination: bottom-left origin, offset by (offsetX, offsetY)
+  // When rotated: apply 90° CW rotation (x,y) → (y, origSrcW - x) before scaling
+  const ops = [];
+  let cmTx=0, cmTy=0; // current transform offset from cm operators
+  
+  function tx(x,y){
+    let rx=x+cmTx, ry=y+cmTy;
+    if(rotated){
+      // 90° CW rotation in source coords: new_x = old_y, new_y = origSrcW - old_x
+      const tmp=rx; rx=ry; ry=origSrcW-tmp;
+    }
+    return { x: rx*scaleX+offsetX, y: ry*scaleY+offsetY };
+  }
+  
+  for(const op of path.ops){
+    if(op.op==='cm'){
+      cmTx=op.e; cmTy=op.f;
+      continue;
+    }
+    if(op.op==='m'){
+      const t=tx(op.x,op.y);
+      ops.push({op:'m', x:t.x, y:t.y});
+    } else if(op.op==='l'){
+      const t=tx(op.x,op.y);
+      ops.push({op:'l', x:t.x, y:t.y});
+    } else if(op.op==='c'){
+      const t1=tx(op.x1,op.y1), t2=tx(op.x2,op.y2), t3=tx(op.x3,op.y3);
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+    } else if(op.op==='h'){
+      ops.push({op:'h'});
+    } else if(op.op==='re'){
+      if(rotated){
+        // Rectangle: rotate all 4 corners and emit as m/l/h
+        const p1=tx(op.x,op.y), p2=tx(op.x+op.w,op.y), p3=tx(op.x+op.w,op.y+op.h), p4=tx(op.x,op.y+op.h);
+        ops.push({op:'m',x:p1.x,y:p1.y},{op:'l',x:p2.x,y:p2.y},{op:'l',x:p3.x,y:p3.y},{op:'l',x:p4.x,y:p4.y},{op:'h'});
+      } else {
+        ops.push({op:'re', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY,
+          w:op.w*scaleX, h:op.h*scaleY});
+      }
+    }
+  }
+  return {ops};
+}
+
+function buildCutPDF(sd,W,H){
+  const R=REG_R,K=KAPPA,n=sd.length,f=v=>v.toFixed(4);
+  const dieName = spotColorConfig.generatedDieName || 'CutContour';
+  const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+  function circ(cx,cy,r){return`${f(cx+r)} ${f(cy)} m ${f(cx+r)} ${f(cy+r*K)} ${f(cx+r*K)} ${f(cy+r)} ${f(cx)} ${f(cy+r)} c ${f(cx-r*K)} ${f(cy+r)} ${f(cx-r)} ${f(cy+r*K)} ${f(cx-r)} ${f(cy)} c ${f(cx-r)} ${f(cy-r*K)} ${f(cx-r*K)} ${f(cy-r)} ${f(cx)} ${f(cy-r)} c ${f(cx+r*K)} ${f(cy-r)} ${f(cx+r)} ${f(cy-r*K)} ${f(cx+r)} ${f(cy)} c f\n`;}
+  const tot=3+2*n,pids=[];for(let i=0;i<n;i++)pids.push(5+2*i);
+  let pdf='%PDF-1.4\n';const offs=[];
+  function wo(id,b){offs[id-1]=pdf.length;pdf+=`${id} 0 obj\n${b}\nendobj\n`;}
+  wo(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  wo(2,`<< /Type /Pages /Kids [${pids.map(i=>i+' 0 R').join(' ')}] /Count ${n} >>`);
+  wo(3,`[/Separation /${dieName} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${dieCmyk.join(' ')}] /N 1 >>]`);
+  for(let i=0;i<n;i++){
+    const sh=sd[i];let s=`/${dieName} CS\n1 SCN\n2.835 w\n`;
+    for(const c of sh.cuts){
+      if(c.type==='rect'){
+        s+=`${f(c.x)} ${f(c.y)} ${f(c.w)} ${f(c.h)} re S\n`;
+      } else if(c.type==='path'){
+        // Set the extracted path's line width
+        s+=`${f(c.width||2.835)} w\n`;
+        for(const op of c.ops){
+          if(op.op==='m') s+=`${f(op.x)} ${f(op.y)} m\n`;
+          else if(op.op==='l') s+=`${f(op.x)} ${f(op.y)} l\n`;
+          else if(op.op==='c') s+=`${f(op.x1)} ${f(op.y1)} ${f(op.x2)} ${f(op.y2)} ${f(op.x3)} ${f(op.y3)} c\n`;
+          else if(op.op==='h') s+='h\n';
+          else if(op.op==='re') s+=`${f(op.x)} ${f(op.y)} ${f(op.w)} ${f(op.h)} re\n`;
+        }
+        s+='S\n';
+      }
+    }
+    s+='0 0 0 1 k\n';for(const d of sh.dots)s+=circ(d.cx,d.cy,R);
+    const sid=4+2*i,pid=5+2*i;
+    wo(sid,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
+    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << /${dieName} 3 0 R >> >> >>`);
+  }
+  const xo=pdf.length;pdf+=`xref\n0 ${tot+1}\n0000000000 65535 f \n`;
+  for(let i=0;i<tot;i++)pdf+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
+  pdf+=`trailer\n<< /Size ${tot+1} /Root 1 0 R >>\nstartxref\n${xo}\n%%EOF`;
+  const b=new Uint8Array(pdf.length);for(let i=0;i<pdf.length;i++)b[i]=pdf.charCodeAt(i);return b;
+}
+
+/* === EXPORT PRINT+DIE PDF === */
+async function exportPrintDiePDF(){
+  const btn=el('printDieBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    const cache=new Map(),used=new Set();
+    for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+    for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){const sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}}
+      else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
+    let commonEmbed=null;
+    if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
+      if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
+      else{let e;if(commonBackData.mimeType==='image/jpeg')e=await outDoc.embedJpg(commonBackData.bytes);else e=await outDoc.embedPng(commonBackData.bytes);commonEmbed={ref:e,kind:'image'};}
+    }
+
+    // Create the Separation color space for generated die lines
+    const dieName = spotColorConfig.generatedDieName || 'CutContour';
+    const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+    const sepArray = outDoc.context.obj([
+      PDFLib.PDFName.of('Separation'),
+      PDFLib.PDFName.of(dieName),
+      PDFLib.PDFName.of('DeviceCMYK'),
+      outDoc.context.obj({
+        FunctionType: 2, Domain: [0,1],
+        C0: [0,0,0,0],
+        C1: dieCmyk,
+        N: 1
+      })
+    ]);
+    const csRef = outDoc.context.register(sepArray);
+    const csAlias = 'SpotDie';
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const fp=outDoc.addPage([Wp,Hp]);
+      placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
+      placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
+      // Add die lines for placements without existing die paths
+      addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName);
+
+      if(s.doubleSided){
+        let needsBack=true;
+        if(s.dblMode==='same'){
+          const pl=sheet.placements, cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
+          const allSameContent=pl.every(p=>p.fileId===pl[0].fileId&&p.pageIndex===pl[0].pageIndex);
+          if(allSameContent){
+            const tol=0.1;
+            if(s.flipAxis==='horizontal'){
+              needsBack=!pl.every(p=>{const trimY=p.y+p.bleed;const mirrorY=cH-trimY-p.trimH;return pl.some(q=>Math.abs((q.y+q.bleed)-mirrorY)<tol&&Math.abs((q.x+q.bleed)-(p.x+p.bleed))<tol);});
+            }else{
+              needsBack=!pl.every(p=>{const trimX=p.x+p.bleed;const mirrorX=cW-trimX-p.trimW;return pl.some(q=>Math.abs((q.x+q.bleed)-mirrorX)<tol&&Math.abs((q.y+q.bleed)-(p.y+p.bleed))<tol);});
+            }
+          }
+        }
+        if(needsBack){
+          const bp=outDoc.addPage([Wp,Hp]);
+          placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
+          placeMarks(bp,s,Wp,Hp,fontB,si,'Back');
+        }
+      }
+    }
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_PrintDie.pdf');
+  }catch(err){alert('Print+Die export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download Print+Die PDF';
+}
+
+function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieName){
+  // For placements WITHOUT die paths, add a perimeter rectangle in spot color
+  const needsDie = sheet.placements.filter(p => !p.diePaths || !p.diePaths.paths || !p.diePaths.paths.length);
+  console.log('addDieLinesToPage:', sheet.placements.length, 'placements,', needsDie.length, 'need die.',
+    sheet.placements.map(p => p.label + ': diePaths=' + (p.diePaths ? p.diePaths.paths.length + ' paths' : 'null')));
+  if(!needsDie.length) return;
+
+  // Add spot color to page resources
+  const pageDict = page.node;
+  let resources = pageDict.get(PDFLib.PDFName.of('Resources'));
+  if(resources instanceof PDFLib.PDFRef) resources = outDoc.context.lookup(resources);
+  let csDict = resources.get(PDFLib.PDFName.of('ColorSpace'));
+  if(!csDict){
+    csDict = outDoc.context.obj({});
+    resources.set(PDFLib.PDFName.of('ColorSpace'), csDict);
+  } else if(csDict instanceof PDFLib.PDFRef){
+    csDict = outDoc.context.lookup(csDict);
+  }
+  csDict.set(PDFLib.PDFName.of(csAlias), csRef);
+
+  // Build content stream for die rectangles
+  let cutOps = '';
+  for(const p of needsDie){
+    // If source has no bleed (srcBleed=0), die goes at the full image perimeter
+    // If source has bleed, die goes at the trim position (inside the bleed)
+    const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
+    const hasSrcBleed = srcBl > 0.001;
+    let dieX, dieY, dieW, dieH;
+    if(hasSrcBleed){
+      // Die at trim position
+      dieX = (s.margin + p.x + p.bleed) * PTS;
+      dieY = Hp - (s.margin + p.y + p.bleed + p.trimH) * PTS;
+      dieW = p.trimW * PTS;
+      dieH = p.trimH * PTS;
+    } else {
+      // No source bleed — die at full image edge (physW × physH)
+      dieX = (s.margin + p.x) * PTS;
+      dieY = Hp - (s.margin + p.y + p.h) * PTS;
+      dieW = p.w * PTS;
+      dieH = p.h * PTS;
+    }
+    cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
+  }
+
+  // Append as new content stream
+  const streamBytes = new TextEncoder().encode(cutOps);
+  const stream = outDoc.context.stream(streamBytes);
+  const streamRef = outDoc.context.register(stream);
+  let contents = pageDict.get(PDFLib.PDFName.of('Contents'));
+  if(contents instanceof PDFLib.PDFRef){
+    const arr = outDoc.context.obj([contents]);
+    pageDict.set(PDFLib.PDFName.of('Contents'), arr);
+    contents = arr;
+  }
+  if(contents instanceof PDFLib.PDFArray){
+    contents.push(streamRef);
+  }
+}
+
+function download(bytes,name){
+  const blob=new Blob([bytes],{type:'application/pdf'}),url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url);a.remove();},500);
+}
+
+el('arrangeBtn').addEventListener('click',arrangeLayout);
+el('printBtn').addEventListener('click',exportPrintPDF);
+el('printDieBtn').addEventListener('click',exportPrintDiePDF);
+el('opwBtn').addEventListener('click',exportOPWPDF);
+el('cutBtn').addEventListener('click',exportCutPDF);
+</script>
+</body>
+</html>

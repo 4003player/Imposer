@@ -244,6 +244,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
           <option value="yes">Yes — scale art to add bleed</option>
         </select>
       </div>
+      <div class="form-group"><label>Scale %</label><input type="number" id="scalePercent" value="100" min="1" max="9999" step="1" title="Scale files — e.g. 65 for Konami cards, 200 for 2×"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Master Qty</label><input type="number" id="masterQty" value="1" min="1" max="200"></div>
@@ -329,6 +330,20 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeSlug" checked> Slug</label>
       <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeHickeys" checked> Hickeys</label>
     </div>
+    <div id="dieSideOptions" style="display:none;margin-top:6px;text-align:center;font-size:12px;color:#666">
+      <label style="margin-right:12px;user-select:none">Die lines on:
+        <select id="dieSideSel" style="padding:3px 6px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa;font-family:inherit">
+          <option value="face">Face</option>
+          <option value="back">Back</option>
+        </select>
+      </label>
+      <label style="margin-right:12px;user-select:none">Reg dots on:
+        <select id="regDotsSideSel" style="padding:3px 6px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa;font-family:inherit">
+          <option value="face">Face</option>
+          <option value="back">Back</option>
+        </select>
+      </label>
+    </div>
     <p class="note">Colors, resolution, and spot channels are preserved -- no rasterization.</p>
     <div style="text-align:center;margin-top:16px;"><button onclick="location.reload()" style="padding:12px 32px;border:none;border-radius:10px;background:#0071e3;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit;">Make Another</button></div>
   </div>
@@ -394,6 +409,7 @@ function S(){
     stockName:el('stockName').value.trim(), jobName:el('jobName').value.trim(),
     jobNumber:el('jobNumber').value.trim(), gutter:numVal('gutter',0),
     dpi:numVal('imageDPI',150), rasterBleed:numVal('rasterBleed',0), inset:numVal('insetVal',0), safeArea:numVal('safeArea',0), enlargeBleed:el('enlargeBleed').value==='yes',
+    scalePercent:numVal('scalePercent',100),
     masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:Math.max(MARGIN,numVal('safeArea',0)),
     doubleSided:document.querySelector('input[name=printMode]:checked').value==='double',
     flipAxis:document.querySelector('input[name=flipAxis]:checked').value,
@@ -473,6 +489,8 @@ el('insetVal').addEventListener('change',()=>{invalidateLayout();});
 el('insetVal').addEventListener('input',()=>{invalidateLayout();});
 el('safeArea').addEventListener('change',()=>{invalidateLayout();});
 el('safeArea').addEventListener('input',()=>{invalidateLayout();});
+el('scalePercent').addEventListener('change',()=>{invalidateLayout();renderFileList();});
+el('scalePercent').addEventListener('input',()=>{invalidateLayout();renderFileList();});
 function applyBleedOverride(){
   const bl=numVal('rasterBleed',0);
   const enlarge=el('enlargeBleed').value==='yes';
@@ -1595,6 +1613,8 @@ function renderFileList(){
     html+=`<span class="drag-handle">&#9776;</span>`;
     html+=`<span class="name" title="${esc(f.name)}${pgL}">${esc(f.name)}${pgL}</span>`;
     html+=`<span class="info">${p.physW.toFixed(1)}" x ${p.physH.toFixed(1)}"</span>`;
+    const sc=numVal('scalePercent',100);
+    if(sc!==100) html+=` <span class="info" style="color:#0071e3">→ ${(p.physW*sc/100).toFixed(1)}" x ${(p.physH*sc/100).toFixed(1)}" @ ${sc}%</span>`;
     if(f.type==='image'&&p.dpi) html+=` <span class="info">${p.dpi} DPI</span>`;
     if(p.hasTrim)html+=` <span class="tag tag-detect">Bleed ${fmtNum(p.bleed)}"</span>`;
     else if(f.type==='image'&&p.bleed>0)html+=` <span class="info">Bleed ${fmtNum(p.bleed)}"</span>`;
@@ -1659,7 +1679,7 @@ function invalidateLayout(){
   sheets=[];viewSheet=0;viewSide='face';sheetPrintQty=1;
   el('previewBox').style.display='none';el('exportRow').style.display='none';
   el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
-  el('layoutChoices').style.display='none';
+  el('layoutChoices').style.display='none';el('dieSideOptions').style.display='none';
 }
 
 /* === QTY SCRUBBER === */
@@ -1735,16 +1755,26 @@ function resolveOrientation(p,sW,sH,forceRotated){
 /* === PIECES === */
 function collectPieces(forceRotated){
   const s=S(),isDblDiff=s.doubleSided&&s.dblMode==='different',items=[];
+  const scaleFactor=s.scalePercent/100;
   for(const f of inputFiles)for(const p of f.pages){
     if(isDblDiff&&p.side==='back')continue;
     const isAuto = !p.orient || p.orient==='auto';
-    const ori=resolveOrientation(p,s.stockW,s.stockH, isAuto ? forceRotated : undefined);
-    const trimW=ori.rotated?p.trimH:p.trimW,trimH=ori.rotated?p.trimW:p.trimH;
+    // Apply scale to physical and trim dimensions
+    const sPhysW=p.physW*scaleFactor, sPhysH=p.physH*scaleFactor;
+    const sTrimW=p.trimW*scaleFactor, sTrimH=p.trimH*scaleFactor;
+    const sBleed=p.bleed*scaleFactor;
+    const sSrcW=(p.srcW||p.physW)*scaleFactor, sSrcH=(p.srcH||p.physH)*scaleFactor;
+    const sSrcBleed=(p.srcBleed!==undefined?p.srcBleed:p.bleed)*scaleFactor;
+    // Build a scaled page proxy for orientation
+    const sp={physW:sPhysW,physH:sPhysH,orient:p.orient};
+    const ori=resolveOrientation(sp,s.stockW,s.stockH, isAuto ? forceRotated : undefined);
+    const trimW=ori.rotated?sTrimH:sTrimW,trimH=ori.rotated?sTrimW:sTrimH;
     for(let q=0;q<p.qty;q++)items.push({
-      fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:p.bleed,rotated:ori.rotated,
-      canFlip:isAuto, physW:p.physW, physH:p.physH, trimWOrig:p.trimW, trimHOrig:p.trimH,
-      srcW:p.srcW||p.physW, srcH:p.srcH||p.physH, srcBleed:p.srcBleed!==undefined?p.srcBleed:p.bleed,
+      fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:sBleed,rotated:ori.rotated,
+      canFlip:isAuto, physW:sPhysW, physH:sPhysH, trimWOrig:sTrimW, trimHOrig:sTrimH,
+      srcW:sSrcW, srcH:sSrcH, srcBleed:sSrcBleed,
       enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
+      scaleFactor:scaleFactor,
       label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')+(p.qty>1?` #${q+1}`:''),
     });
   }
@@ -2165,6 +2195,7 @@ function selectLayout(idx){
   }
 
   el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';el('markOptions').style.display=perSheet>0?'':'none';
+  el('dieSideOptions').style.display=(perSheet>0&&s.doubleSided)?'':'none';
   const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
   el('opwBtn').style.display=hasOPW?'':'none';
   const hasDiePaths=sheets.some(sh=>sh.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
@@ -2177,7 +2208,31 @@ function selectLayout(idx){
 }
 
 /* === MARKS === */
-function getRegDots(W,H){const i=.375,g=3.0;return[{x:i,y:i},{x:i+g,y:i},{x:W-i,y:i},{x:i,y:H-i},{x:W-i,y:H-i}];}
+function getArtGroupBounds(sheet,margin){
+  // Compute bounding box of all placements (in stock coords, including margin offset)
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  if(!sheet||!sheet.placements||!sheet.placements.length) return {x:margin,y:margin,w:0,h:0};
+  for(const p of sheet.placements){
+    const px=margin+p.x, py=margin+p.y;
+    minX=Math.min(minX,px); minY=Math.min(minY,py);
+    maxX=Math.max(maxX,px+p.w); maxY=Math.max(maxY,py+p.h);
+  }
+  return {x:minX,y:minY,w:maxX-minX,h:maxY-minY,x2:maxX,y2:maxY};
+}
+function getRegDots(W,H,artBounds){
+  // Place reg dots 1/4" around the perimeter of the art group
+  const pad=0.25;
+  if(artBounds){
+    const ax=artBounds.x-pad, ay=artBounds.y-pad;
+    const ax2=artBounds.x2+pad, ay2=artBounds.y2+pad;
+    return[
+      {x:ax,y:ay},{x:ax+3.0,y:ay},{x:ax2,y:ay},
+      {x:ax,y:ay2},{x:ax2,y:ay2}
+    ];
+  }
+  // Fallback: old behavior at sheet edges
+  const i=.375,g=3.0;return[{x:i,y:i},{x:i+g,y:i},{x:W-i,y:i},{x:i,y:H-i},{x:W-i,y:H-i}];
+}
 function getHickeys(W,H){
   const sz=HICKEY_SIZE,dp=HICKEY_DEPTH,off=HICKEY_OFFSET;
   return[
@@ -2217,10 +2272,13 @@ function drawPreview(){
     let lbl=viewSide==='back'?'(B) '+p.label:p.label;if(lbl.length>24)lbl=lbl.substring(0,22)+'...';
     ctx.fillText(lbl,x+w/2,y+h/2);
   }
-  ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
+  const artBounds=getArtGroupBounds(sheet,s.margin);
+  ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH,artBounds)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
   ctx.fillStyle='#1d1d1f';for(const h of getHickeys(s.stockW,s.stockH)){ctx.beginPath();ctx.moveTo(h.x1*scale,h.y1*scale);ctx.lineTo(h.x2*scale,h.y2*scale);ctx.lineTo(h.x3*scale,h.y3*scale);ctx.closePath();ctx.fill();}
-  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,9*scale)}px sans-serif`;ctx.textAlign='left';ctx.textBaseline='top';
-  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),(s.margin+4.0)*scale,0.1*scale);
+  // Slug at 1/4" below art group bottom
+  const slugY=artBounds.y2+0.25;
+  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,12*scale)}px sans-serif`;ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),artBounds.x*scale,slugY*scale);
   const nav=el('sheetNav');let nh='';
   if(sheets.length>1)nh+=`Sheet ${viewSheet+1}/${sheets.length} <button onclick="prevSheet()">&#9664;</button><button onclick="nextSheet()">&#9654;</button>`;
   if(s.doubleSided)nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
@@ -2229,6 +2287,7 @@ function drawPreview(){
 
 function buildSlug(s,si,side){
   const p=[];if(s.jobName)p.push(s.jobName);if(s.jobNumber)p.push('#'+s.jobNumber);if(s.stockName)p.push(s.stockName);
+  if(s.scalePercent && s.scalePercent !== 100) p.push('Scale '+s.scalePercent+'%');
   if(s.doubleSided){
     const isLandscape=s.stockW>s.stockH;
     const isTumble=isLandscape?(s.flipAxis==='vertical'):(s.flipAxis==='horizontal');
@@ -2592,7 +2651,8 @@ async function exportPrintPDF(){
     }
     for(let si=0;si<sheets.length;si++){
       const sheet=sheets[si];
-      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face');
+      const ab=getArtGroupBounds(sheet,s.margin);
+      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face',{artBounds:ab});
       if(s.doubleSided){
         // For "same" mode, always generate a back page — the back uses the same art
         // but positioned for the other side of the sheet (flipped), so it's never redundant.
@@ -2602,7 +2662,7 @@ async function exportPrintPDF(){
           // not a mirror copy of the face layout.
           needsBack=true;
         }
-        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back',{skipRegDots:true});}
+        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back',{artBounds:ab});}
       }
     }
     download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_Print.pdf');
@@ -2641,15 +2701,11 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
 
 function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
   const w=p.w*PTS,h=p.h*PTS;
+  const sf=p.scaleFactor||1;
   // Clip to the user's bleed box (trim + user bleed on each side)
   page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
 
   // Back-side content: North model — tops of files always point to North on both sides.
-  // For top/bottom (horizontal) flip: North moves to opposite side → 180° rotation to point North again.
-  //   BUT for rotated items, the 180° would flip the 90°CW to 90°CCW (wrong direction).
-  //   Skip the 180° for rotated items — the Y-mirrored position handles the TB flip,
-  //   and the 90°CW rotation stays the same direction as the face.
-  // For left/right (vertical) flip: North stays at top → no content transform, just X-mirrored position.
   if(isBack && flipAxis==='horizontal' && !p.rotated){
     page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, x+w, y+h));
   }
@@ -2670,9 +2726,8 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
       else page.drawImage(c.ref,{x:x,y:y,width:w,height:h});
     }
   } else {
-    // Draw at native source dimensions; if user's bleed < source bleed, clip crops the excess
+    // Draw at scaled source dimensions
     const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
-    // Offset to align trim: source bleed may differ from user bleed
     const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
     if(p.rotated){
       const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
@@ -2681,10 +2736,7 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
       if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
       else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
     } else if(isBack && flipAxis==='horizontal'){
-      // 180° CTM already applied — draw at (0,0) in the rotated coordinate space
-      // CTM maps (0,0)→(x+w, y+h), so draw at (0,0) with srcW×srcH fills the clip
-      // The bleed offset must be NEGATIVE in the flipped space (180° rotation inverts it)
-      const ox=-(srcBl-usrBl); // offset to align trim within bleed (negated for 180° CTM)
+      const ox=-(srcBl-usrBl);
       if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
       else page.drawImage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
     } else {
@@ -2700,13 +2752,32 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
   const black=PDFLib.cmyk(0,0,0,1);
   const doSlug=!(opts&&opts.skipSlug)&&el('includeSlug').checked;
   const doHickeys=!(opts&&opts.skipHickeys)&&el('includeHickeys').checked;
-
-  // Reg dots only on face side — not on back
-  if(!(opts&&opts.skipRegDots)&&sideLabel!=='Back') for(const d of getRegDots(s.stockW,s.stockH))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
-
-  // Hickeys and slug are clipped to the margin strip (outside content+bleed area)
-  // Using even-odd rule: full page rect + inner content rect = margin strip only
+  const artBounds=opts&&opts.artBounds;
   const mPts=s.margin*PTS;
+
+  // Reg dots — respect die/reg side selector for double-sided
+  const regDotsSide=s.doubleSided?el('regDotsSideSel').value:'face';
+  const wantRegDots=!(opts&&opts.skipRegDots)&&el('regDotsChk')&&el('regDotsChk').checked;
+  const regOnThisSide=(sideLabel==='Back'&&regDotsSide==='back')||(sideLabel!=='Back'&&regDotsSide==='face')||(sideLabel==='OPW');
+  if(wantRegDots&&regOnThisSide){
+    for(const d of getRegDots(s.stockW,s.stockH,artBounds))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+  }
+
+  // Slug is drawn OUTSIDE the hickey clip — it goes near the art group, not in the margin strip
+  if(doSlug){
+    // Slug text at 24pt, positioned 1/4" below art group
+    const slugSize=24;
+    if(artBounds){
+      const slugX=artBounds.x*PTS;
+      const slugY=Hp-(artBounds.y2+0.25)*PTS-slugSize;
+      page.drawText(buildSlug(s,si,sideLabel),{x:slugX,y:slugY,size:slugSize,font,color:black});
+    } else {
+      page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-mPts*0.65,size:slugSize,font,color:black});
+    }
+  }
+
+  // Hickeys are clipped to the margin strip (outside content+bleed area)
+  // Using even-odd rule: full page rect + inner content rect = margin strip only
   const innerX=mPts, innerY=mPts, innerW=Wp-2*mPts, innerH=Hp-2*mPts;
   page.pushOperators(PDFLib.pushGraphicsState());
   page.pushOperators(
@@ -2731,11 +2802,6 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
       page.drawSvgPath(`M ${ax+sh+hl} ${ay} L ${ax+sh} ${ay+hw} L ${ax+sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
       page.drawSvgPath(`M ${ax-sh-hl} ${ay} L ${ax-sh} ${ay+hw} L ${ax-sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
     }
-  }
-  if(doSlug){
-    // Slug text — doubled size for readability
-    const slugSize=Math.max(16,Math.min(40,mPts*1.4));
-    page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-mPts*0.65,size:slugSize,font,color:black});
   }
   page.pushOperators(PDFLib.popGraphicsState());
 }
@@ -2783,7 +2849,8 @@ async function exportOPWPDF(){
       }
 
       // Same marks as process sheet (reg dots, hickeys, slug)
-      placeMarks(pg,s,Wp,Hp,fontB,si,'OPW');
+      const ab=getArtGroupBounds(sheet,s.margin);
+      placeMarks(pg,s,Wp,Hp,fontB,si,'OPW',{artBounds:ab});
     }
 
     download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_OPW.pdf');
@@ -2838,7 +2905,8 @@ function exportCutPDF(){
         cuts.push({type:'rect', x:cutX, y:cutY, w:cutW, h:cutH});
       }
     }
-    const dots=getRegDots(s.stockW,s.stockH).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
+    const ab=getArtGroupBounds(sheet,s.margin);
+    const dots=getRegDots(s.stockW,s.stockH,ab).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
     // Shift one reg dot per sheet to prevent wrong cut file usage.
     // Move the second dot (top-left area) by sheetIndex * 1.5" along X.
     // Each sheet's cut file has a uniquely positioned dot pattern.
@@ -2988,13 +3056,17 @@ async function exportPrintDiePDF(){
     const csRef = outDoc.context.register(sepArray);
     const csAlias = 'SpotDie';
 
+    const dieSide=s.doubleSided?el('dieSideSel').value:'face';
+
     for(let si=0;si<sheets.length;si++){
       const sheet=sheets[si];
+      const ab=getArtGroupBounds(sheet,s.margin);
+      const marksWithArt=Object.assign({artBounds:ab},markOpts);
       const fp=outDoc.addPage([Wp,Hp]);
       placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
-      placeMarks(fp,s,Wp,Hp,fontB,si,'Face',markOpts);
-      // Add die lines for placements without existing die paths
-      addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
+      placeMarks(fp,s,Wp,Hp,fontB,si,'Face',marksWithArt);
+      // Add die lines on selected side
+      if(dieSide==='face') addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
 
       if(s.doubleSided){
         // For "same" mode, always generate a back page
@@ -3005,8 +3077,8 @@ async function exportPrintDiePDF(){
         if(needsBack){
           const bp=outDoc.addPage([Wp,Hp]);
           placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
-          placeMarks(bp,s,Wp,Hp,fontB,si,'Back',Object.assign({skipRegDots:true},markOpts));
-          // Die lines only on face — no die on back side
+          placeMarks(bp,s,Wp,Hp,fontB,si,'Back',marksWithArt);
+          if(dieSide==='back') addDieLinesToPage(bp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'back',s.flipAxis);
         }
       }
     }
