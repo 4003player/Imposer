@@ -3055,10 +3055,13 @@ async function exportPrintDiePDF(){
         const needTwoVersions = hasDie && s.doubleSided;
 
         if(needTwoVersions){
-          // Need both stripped and unstripped — embed stripped FIRST, then unstripped,
-          // each from separate PDFDocument loads to avoid pdf-lib dedup/conflicts.
-          const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
-          const strippedBytes = stripResult ? stripResult.bytes : f.bytes;
+          // Need both stripped and unstripped — copy original bytes BEFORE anything
+          // touches them, because stripDieFromPdfDoc and PDFDocument.load both detach ArrayBuffers.
+          const origCopy1 = f.bytes.slice(0); // for stripDieFromPdfDoc input
+          const origCopy2 = f.bytes.slice(0); // for unstripped embed
+          
+          const stripResult=await stripDieFromPdfDoc(origCopy1,dieCSNames,dieCSCmyk);
+          const strippedBytes = stripResult ? stripResult.bytes : f.bytes.slice(0);
 
           // 1) Embed stripped version (for non-die side)
           const sdStripped=await PDFLib.PDFDocument.load(strippedBytes,{ignoreEncryption:true});
@@ -3069,8 +3072,8 @@ async function exportPrintDiePDF(){
             else cacheFace.set(`${f.id}-${pi}`,entry);
           }
 
-          // 2) Embed unstripped version (for die side) — fresh load from original bytes
-          const sdOrig=await PDFLib.PDFDocument.load(new Uint8Array(f.bytes),{ignoreEncryption:true});
+          // 2) Embed unstripped version (for die side)
+          const sdOrig=await PDFLib.PDFDocument.load(origCopy2,{ignoreEncryption:true});
           for(const pi of pis){
             const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
             const entry={ref:e,kind:'page'};
