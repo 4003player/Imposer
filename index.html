@@ -3177,10 +3177,12 @@ async function exportPrintDiePDF(){
         for(const pi of pis){const pg=f.pages[pi];if(!pg||!pg.spotColors)continue;for(const sc of pg.spotColors){if(spotColorConfig.dieSpotNames.has(sc.spotName)){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk||[0,1,0,0];}}}
 
         const hasDie = dieCSNames.length > 0;
+        // Only strip die when double-sided (need clean print on non-die side).
+        // Single-sided: use original source with die embedded — it stays in the XObject.
+        const needStrip = hasDie && s.doubleSided;
 
-        // Always embed stripped source for print content (both sides)
         let sd;
-        if(hasDie){
+        if(needStrip){
           const stripResult=await stripDieFromPdfDoc(f.bytes.slice(0),dieCSNames,dieCSCmyk);
           sd = stripResult
             ? await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true})
@@ -3190,7 +3192,7 @@ async function exportPrintDiePDF(){
         }
         for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
 
-        // If file has die, also embed a DIE-ONLY version as overlay
+        // If file has die AND double-sided, also embed a DIE-ONLY version as overlay
         if(hasDie && s.doubleSided){
           const dieOnlyBytes = await extractDieOnlyFromPdfDoc(f.bytes.slice(0), dieCSNames);
           if(dieOnlyBytes){
