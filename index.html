@@ -3179,13 +3179,9 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
     }
 
     if(p.diePaths && p.diePaths.paths && p.diePaths.paths.length){
-      // File already has die paths embedded in the content — the original die is correct.
-      // Skip the overlay die — the original die from the source file is already in the right position.
-      // Only add overlay for the _marker case (extraction failed but die spots exist).
-      if(!p.diePaths.paths[0]._marker){
-        continue; // Skip — original die is already there
-      }
-      // Marker case — extraction failed, fall through to rectangle die
+      // File has die paths (embedded or extracted) — the unstripped source XObject
+      // already contains them, so skip generating an overlay die.
+      continue;
     }
     // No extracted die paths (or marker) — rectangle die in face coords
     if(dieW > 0 && dieH > 0)
