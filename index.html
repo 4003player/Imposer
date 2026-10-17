@@ -3035,49 +3035,62 @@ async function exportPrintDiePDF(){
 
     const dieSide=s.doubleSided?el('dieSideSel').value:'face';
 
-    // Build two embed caches: one WITH die (for the die side) and one WITHOUT (for the other side)
-    const cacheDie=new Map(), cacheNoDie=new Map();
+    // Build embed caches — for PDFs with die paths, we need stripped and unstripped versions
+    // when double-sided with dieSide control. Embed each into its own separate output doc to
+    // avoid pdf-lib's internal conflicts, then copy pages between docs.
+    const cacheFace=new Map(), cacheBack=new Map();
     const used=new Set();
     for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
 
     for(const f of inputFiles){
       const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
       if(f.type==='pdf'){
-        // Embed unstripped source (with die)
-        const sdWithDie=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
-        for(const pi of pis){const[e]=await outDoc.embedPages([sdWithDie.getPages()[pi]]);cacheDie.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
-
-        // Embed die-stripped source (without die) for the non-die side
+        // Check if this file has die paths
         const dieCSNames = [];
         const dieCSCmyk = {};
         for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
-        // Also check user-configured die spot names
         for(const pi of pis){const pg=f.pages[pi];if(!pg||!pg.spotColors)continue;for(const sc of pg.spotColors){if(spotColorConfig.dieSpotNames.has(sc.spotName)){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk||[0,1,0,0];}}}
 
-        if(dieCSNames.length>0 && s.doubleSided){
-          const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
-          if(stripResult){
-            const sdNoDie=await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true});
-            for(const pi of pis){const[e]=await outDoc.embedPages([sdNoDie.getPages()[pi]]);cacheNoDie.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+        const hasDie = dieCSNames.length > 0;
+        const needTwoVersions = hasDie && s.doubleSided;
+
+        // Embed the unstripped source (always needed for at least one side)
+        const sdOrig=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+        for(const pi of pis){
+          const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
+          const entry={ref:e,kind:'page'};
+          // Which side gets the unstripped (with die) embed?
+          if(dieSide==='face' || !needTwoVersions){
+            cacheFace.set(`${f.id}-${pi}`,entry);
+            if(!needTwoVersions) cacheBack.set(`${f.id}-${pi}`,entry);
           } else {
-            // Strip failed — use unstripped for both
-            for(const[k,v] of cacheDie) if(!cacheNoDie.has(k)) cacheNoDie.set(k,v);
+            // dieSide=back: unstripped goes to back
+            cacheBack.set(`${f.id}-${pi}`,entry);
           }
-        } else {
-          // No die to strip, or single-sided — same embed for both
-          for(const[k,v] of cacheDie) if(!cacheNoDie.has(k)) cacheNoDie.set(k,v);
+        }
+
+        // If we need two versions, embed die-stripped for the non-die side
+        if(needTwoVersions){
+          const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
+          const strippedBytes = stripResult ? stripResult.bytes : f.bytes;
+          const sdStripped=await PDFLib.PDFDocument.load(strippedBytes,{ignoreEncryption:true});
+          for(const pi of pis){
+            const[e]=await outDoc.embedPages([sdStripped.getPages()[pi]]);
+            const entry={ref:e,kind:'page'};
+            if(dieSide==='face'){
+              cacheBack.set(`${f.id}-${pi}`,entry);
+            } else {
+              cacheFace.set(`${f.id}-${pi}`,entry);
+            }
+          }
         }
       } else {
         let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);
-        cacheDie.set(`${f.id}-0`,{ref:e,kind:'image'});
-        cacheNoDie.set(`${f.id}-0`,{ref:e,kind:'image'});
+        const entry={ref:e,kind:'image'};
+        cacheFace.set(`${f.id}-0`,entry);
+        cacheBack.set(`${f.id}-0`,entry);
       }
     }
-
-    // Face uses cacheDie when dieSide=face, cacheNoDie when dieSide=back
-    // Back uses the opposite
-    const cacheFace = dieSide==='face' ? cacheDie : cacheNoDie;
-    const cacheBack = dieSide==='back' ? cacheDie : cacheNoDie;
 
     let commonEmbed=null;
     if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
