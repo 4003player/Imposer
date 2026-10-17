@@ -2721,6 +2721,10 @@ function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
       page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h));
       if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:h,height:w});
       else page.drawImage(c.ref,{x:0,y:0,width:h,height:w});
+    } else if(isBack && flipAxis==='horizontal'){
+      // 180° CTM is active — draw at (0,0) so the flip maps it to fill the clip rect
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:w,height:h});
+      else page.drawImage(c.ref,{x:0,y:0,width:w,height:h});
     } else {
       if(c.kind==='page') page.drawPage(c.ref,{x:x,y:y,width:w,height:h});
       else page.drawImage(c.ref,{x:x,y:y,width:w,height:h});
