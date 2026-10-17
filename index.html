@@ -2581,6 +2581,130 @@ async function stripDieFromPdfDoc(pdfBytes, dieCSNames, dieCSCmyk){
   }
 }
 
+/* Extract die-only PDF: inverse of stripDieFromPdfDoc.
+   Keeps ONLY the die spot color operations, removes all CMYK art/images.
+   Result is a transparent page with just the die lines. */
+async function extractDieOnlyFromPdfDoc(pdfBytes, dieCSNames){
+  if(!dieCSNames || !dieCSNames.length) return null;
+  try {
+    const doc = await PDFLib.PDFDocument.load(pdfBytes, {ignoreEncryption:true});
+    const pages = doc.getPages();
+    let anyModified = false;
+
+    for(let pi=0; pi<pages.length; pi++){
+      const node = pages[pi].node;
+      const contentsRef = node.get(PDFLib.PDFName.of('Contents'));
+      if(!contentsRef) continue;
+
+      let streams = [];
+      const contents = doc.context.lookup(contentsRef);
+      if(contents instanceof PDFLib.PDFArray){
+        for(let i=0;i<contents.size();i++){
+          const s = doc.context.lookup(contents.get(i));
+          if(s) streams.push(s);
+        }
+      } else {
+        streams.push(contents);
+      }
+
+      for(const s of streams){
+        let compressedBytes = null;
+        if(s.getContents) compressedBytes = s.getContents();
+        else if(s.contents) compressedBytes = s.contents;
+        else if(s.getUnencodedContents) compressedBytes = s.getUnencodedContents();
+        if(!compressedBytes) continue;
+
+        let hasFilter = false;
+        try { if(s.dict){ const fv=s.dict.get(PDFLib.PDFName.of('Filter')); if(fv) hasFilter=true; } } catch(e){}
+
+        let text;
+        if(hasFilter){
+          text = await decompressPdfStream(compressedBytes);
+          if(!text) continue;
+        } else {
+          text = new TextDecoder('latin1').decode(compressedBytes);
+        }
+
+        if(!dieCSNames.some(n => text.includes('/'+n))) continue;
+
+        // Parse: keep only lines inside die CS sections, remove everything else
+        const lines = text.split('\n');
+        const outLines = [];
+        let inDieSection = false;
+        let depth = 0;
+
+        for(const line of lines){
+          const t = line.trim();
+
+          // Detect die CS activation
+          if(!inDieSection && dieCSNames.some(n => t.includes('/'+n+' CS') && t.includes('SCN'))){
+            inDieSection = true;
+            depth = 0;
+            outLines.push(line);
+            continue;
+          }
+
+          if(inDieSection){
+            // Detect switch away from die CS
+            if(t.includes(' CS ') && !dieCSNames.some(n => t.includes('/'+n))){
+              inDieSection = false;
+              continue;
+            }
+            // Non-die color ops end die section
+            if(t.match(/^[\d.][\d. ]+ k$/) || t.match(/^[\d.][\d. ]+ K$/) ||
+               t.match(/^[\d.][\d. ]+ rg$/) || t.match(/^[\d.][\d. ]+ RG$/) ||
+               t.match(/^[\d.][\d. ]+ g$/) || t.match(/^[\d.][\d. ]+ G$/)){
+              inDieSection = false;
+              continue;
+            }
+            // Keep die ops: path, stroke, transforms, q/Q
+            outLines.push(line);
+          }
+          // Outside die section: skip everything (removes CMYK art, images, text)
+        }
+
+        const newText = outLines.join('\n');
+        const cleanedBytes = new TextEncoder().encode(newText);
+        if(hasFilter){
+          const recompressed = await compressStream(cleanedBytes);
+          if(!recompressed) continue;
+          if(s.contents !== undefined){ s.contents = recompressed; anyModified = true; }
+        } else {
+          if(s.contents !== undefined){ s.contents = cleanedBytes; anyModified = true; }
+        }
+      }
+
+      // Remove all XObject image references (removes embedded images)
+      try {
+        const res = doc.context.lookup(node.get(PDFLib.PDFName.of('Resources')));
+        if(res && res instanceof PDFLib.PDFDict){
+          const xoDict = doc.context.lookup(res.get(PDFLib.PDFName.of('XObject')));
+          if(xoDict && xoDict instanceof PDFLib.PDFDict){
+            // Remove all image XObjects, keep Forms
+            for(const [key, val] of xoDict.entries()){
+              const xobj = doc.context.lookup(val);
+              if(xobj){
+                try {
+                  const subtype = xobj.get ? xobj.get(PDFLib.PDFName.of('Subtype')) : null;
+                  if(subtype && subtype instanceof PDFLib.PDFName && subtype.decodeText() === 'Image'){
+                    xoDict.delete(key);
+                  }
+                } catch(e){}
+              }
+            }
+          }
+        }
+      } catch(e){}
+    }
+
+    if(!anyModified) return null;
+    return await doc.save({useObjectStreams:false});
+  } catch(e) {
+    console.warn('extractDieOnlyFromPdfDoc failed:', e);
+    return null;
+  }
+}
+
 // Compress using browser CompressionStream
 async function compressStream(bytes){
   for(const fmt of ['deflate', 'deflate-raw']){
@@ -3066,10 +3190,13 @@ async function exportPrintDiePDF(){
         }
         for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
 
-        // If file has die, also embed the ORIGINAL unstripped page as a die overlay
+        // If file has die, also embed a DIE-ONLY version as overlay
         if(hasDie && s.doubleSided){
-          const sdOrig=await PDFLib.PDFDocument.load(f.bytes.slice(0),{ignoreEncryption:true});
-          for(const pi of pis){const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);dieOverlay.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+          const dieOnlyBytes = await extractDieOnlyFromPdfDoc(f.bytes.slice(0), dieCSNames);
+          if(dieOnlyBytes){
+            const sdDie=await PDFLib.PDFDocument.load(dieOnlyBytes,{ignoreEncryption:true});
+            for(const pi of pis){const[e]=await outDoc.embedPages([sdDie.getPages()[pi]]);dieOverlay.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+          }
         }
       } else {
         let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);
@@ -3136,10 +3263,9 @@ async function exportPrintDiePDF(){
   btn.disabled=false;btn.textContent='Download Print+Die PDF';
 }
 
-/* Place die overlay: draw the unstripped source page on top of the stripped content.
-   The stripped page is already drawn (clean print). This overlays the FULL original
-   page including its embedded die lines. The CMYK art is identical so it layers
-   invisibly — only the die spot color adds visible content. */
+/* Place die overlay: draw the die-only version of the source on top of the content.
+   The stripped page is already drawn (clean print). This overlays ONLY the die
+   spot color content — CMYK art is removed so it doesn't cover the back art. */
 function placeDieOverlay(page,sheet,dieOverlay,s,Wp,Hp,side){
   if(!dieOverlay.size) return;
   for(const p of sheet.placements){
