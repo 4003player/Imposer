@@ -335,12 +335,14 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
         <select id="dieSideSel" style="padding:3px 6px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa;font-family:inherit">
           <option value="face">Face</option>
           <option value="back">Back</option>
+          <option value="both">Both</option>
         </select>
       </label>
       <label style="margin-right:12px;user-select:none">Reg dots on:
         <select id="regDotsSideSel" style="padding:3px 6px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa;font-family:inherit">
           <option value="face">Face</option>
           <option value="back">Back</option>
+          <option value="both">Both</option>
         </select>
       </label>
     </div>
@@ -2886,9 +2888,23 @@ function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
   // Reg dots — respect die/reg side selector for double-sided
   const regDotsSide=s.doubleSided?el('regDotsSideSel').value:'face';
   const wantRegDots=!(opts&&opts.skipRegDots)&&el('regDotsChk')&&el('regDotsChk').checked;
-  const regOnThisSide=(sideLabel==='Back'&&regDotsSide==='back')||(sideLabel!=='Back'&&regDotsSide==='face')||(sideLabel==='OPW');
+  const regOnThisSide=regDotsSide==='both'||(sideLabel==='Back'&&regDotsSide==='back')||(sideLabel!=='Back'&&regDotsSide==='face')||(sideLabel==='OPW');
   if(wantRegDots&&regOnThisSide){
-    for(const d of getRegDots(s.stockW,s.stockH,artBounds))page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+    const dots=getRegDots(s.stockW,s.stockH,artBounds);
+    if(sideLabel==='Back'){
+      // Mirror dot positions along flip axis for back side
+      for(const d of dots){
+        let mx,my;
+        if(s.flipAxis==='horizontal'){
+          mx=d.x; my=s.stockH-d.y;
+        } else {
+          mx=s.stockW-d.x; my=d.y;
+        }
+        page.drawCircle({x:mx*PTS,y:Hp-my*PTS,size:REG_R,color:black});
+      }
+    } else {
+      for(const d of dots) page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+    }
   }
 
   // Slug is drawn OUTSIDE the hickey clip — it goes near the art group, not in the margin strip
@@ -3238,8 +3254,7 @@ async function exportPrintDiePDF(){
       const fp=outDoc.addPage([Wp,Hp]);
       placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
       placeMarks(fp,s,Wp,Hp,fontB,si,'Face',marksWithArt);
-      if(dieSide==='face'){
-        // For face die: overlay unstripped pages that have embedded dies
+      if(dieSide==='face'||dieSide==='both'){
         placeDieOverlay(fp,sheet,dieOverlay,s,Wp,Hp,'face');
         addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
       }
@@ -3252,8 +3267,7 @@ async function exportPrintDiePDF(){
           const bp=outDoc.addPage([Wp,Hp]);
           placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
           placeMarks(bp,s,Wp,Hp,fontB,si,'Back',marksWithArt);
-          if(dieSide==='back'){
-            // Overlay unstripped pages on back for embedded dies (mirrored)
+          if(dieSide==='back'||dieSide==='both'){
             placeDieOverlay(bp,sheet,dieOverlay,s,Wp,Hp,'back');
             addDieLinesToPage(bp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'back',s.flipAxis);
           }
