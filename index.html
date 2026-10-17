@@ -3054,34 +3054,37 @@ async function exportPrintDiePDF(){
         const hasDie = dieCSNames.length > 0;
         const needTwoVersions = hasDie && s.doubleSided;
 
-        // Embed the unstripped source (always needed for at least one side)
-        const sdOrig=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
-        for(const pi of pis){
-          const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
-          const entry={ref:e,kind:'page'};
-          // Which side gets the unstripped (with die) embed?
-          if(dieSide==='face' || !needTwoVersions){
-            cacheFace.set(`${f.id}-${pi}`,entry);
-            if(!needTwoVersions) cacheBack.set(`${f.id}-${pi}`,entry);
-          } else {
-            // dieSide=back: unstripped goes to back
-            cacheBack.set(`${f.id}-${pi}`,entry);
-          }
-        }
-
-        // If we need two versions, embed die-stripped for the non-die side
         if(needTwoVersions){
+          // Need both stripped and unstripped — embed stripped FIRST, then unstripped,
+          // each from separate PDFDocument loads to avoid pdf-lib dedup/conflicts.
           const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
           const strippedBytes = stripResult ? stripResult.bytes : f.bytes;
+
+          // 1) Embed stripped version (for non-die side)
           const sdStripped=await PDFLib.PDFDocument.load(strippedBytes,{ignoreEncryption:true});
           for(const pi of pis){
             const[e]=await outDoc.embedPages([sdStripped.getPages()[pi]]);
             const entry={ref:e,kind:'page'};
-            if(dieSide==='face'){
-              cacheBack.set(`${f.id}-${pi}`,entry);
-            } else {
-              cacheFace.set(`${f.id}-${pi}`,entry);
-            }
+            if(dieSide==='face') cacheBack.set(`${f.id}-${pi}`,entry);
+            else cacheFace.set(`${f.id}-${pi}`,entry);
+          }
+
+          // 2) Embed unstripped version (for die side) — fresh load from original bytes
+          const sdOrig=await PDFLib.PDFDocument.load(new Uint8Array(f.bytes),{ignoreEncryption:true});
+          for(const pi of pis){
+            const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
+            const entry={ref:e,kind:'page'};
+            if(dieSide==='face') cacheFace.set(`${f.id}-${pi}`,entry);
+            else cacheBack.set(`${f.id}-${pi}`,entry);
+          }
+        } else {
+          // Single version — embed once, use for both sides
+          const sdOrig=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+          for(const pi of pis){
+            const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
+            const entry={ref:e,kind:'page'};
+            cacheFace.set(`${f.id}-${pi}`,entry);
+            cacheBack.set(`${f.id}-${pi}`,entry);
           }
         }
       } else {
