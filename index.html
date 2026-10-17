@@ -3035,10 +3035,11 @@ async function exportPrintDiePDF(){
 
     const dieSide=s.doubleSided?el('dieSideSel').value:'face';
 
-    // Build embed caches — for PDFs with die paths, we need stripped and unstripped versions
-    // when double-sided with dieSide control. Embed each into its own separate output doc to
-    // avoid pdf-lib's internal conflicts, then copy pages between docs.
-    const cacheFace=new Map(), cacheBack=new Map();
+    // Strategy: embed STRIPPED source for both face and back (clean print).
+    // Then embed UNSTRIPPED source as a separate die-overlay XObject, drawn
+    // on top of the die-side page only. This avoids pdf-lib buffer conflicts.
+    const cache=new Map();
+    const dieOverlay=new Map(); // fileId-pageIdx → {ref, kind:'page'} for unstripped source
     const used=new Set();
     for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
 
@@ -3052,49 +3053,27 @@ async function exportPrintDiePDF(){
         for(const pi of pis){const pg=f.pages[pi];if(!pg||!pg.spotColors)continue;for(const sc of pg.spotColors){if(spotColorConfig.dieSpotNames.has(sc.spotName)){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk||[0,1,0,0];}}}
 
         const hasDie = dieCSNames.length > 0;
-        const needTwoVersions = hasDie && s.doubleSided;
 
-        if(needTwoVersions){
-          // Need both stripped and unstripped — copy original bytes BEFORE anything
-          // touches them, because stripDieFromPdfDoc and PDFDocument.load both detach ArrayBuffers.
-          const origCopy1 = f.bytes.slice(0); // for stripDieFromPdfDoc input
-          const origCopy2 = f.bytes.slice(0); // for unstripped embed
-          
-          const stripResult=await stripDieFromPdfDoc(origCopy1,dieCSNames,dieCSCmyk);
-          const strippedBytes = stripResult ? stripResult.bytes : f.bytes.slice(0);
-
-          // 1) Embed stripped version (for non-die side)
-          const sdStripped=await PDFLib.PDFDocument.load(strippedBytes,{ignoreEncryption:true});
-          for(const pi of pis){
-            const[e]=await outDoc.embedPages([sdStripped.getPages()[pi]]);
-            const entry={ref:e,kind:'page'};
-            if(dieSide==='face') cacheBack.set(`${f.id}-${pi}`,entry);
-            else cacheFace.set(`${f.id}-${pi}`,entry);
-          }
-
-          // 2) Embed unstripped version (for die side)
-          const sdOrig=await PDFLib.PDFDocument.load(origCopy2,{ignoreEncryption:true});
-          for(const pi of pis){
-            const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
-            const entry={ref:e,kind:'page'};
-            if(dieSide==='face') cacheFace.set(`${f.id}-${pi}`,entry);
-            else cacheBack.set(`${f.id}-${pi}`,entry);
-          }
+        // Always embed stripped source for print content (both sides)
+        let sd;
+        if(hasDie){
+          const stripResult=await stripDieFromPdfDoc(f.bytes.slice(0),dieCSNames,dieCSCmyk);
+          sd = stripResult
+            ? await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true})
+            : await PDFLib.PDFDocument.load(f.bytes.slice(0),{ignoreEncryption:true});
         } else {
-          // Single version — embed once, use for both sides
-          const sdOrig=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
-          for(const pi of pis){
-            const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);
-            const entry={ref:e,kind:'page'};
-            cacheFace.set(`${f.id}-${pi}`,entry);
-            cacheBack.set(`${f.id}-${pi}`,entry);
-          }
+          sd=await PDFLib.PDFDocument.load(f.bytes.slice(0),{ignoreEncryption:true});
+        }
+        for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+
+        // If file has die, also embed the ORIGINAL unstripped page as a die overlay
+        if(hasDie && s.doubleSided){
+          const sdOrig=await PDFLib.PDFDocument.load(f.bytes.slice(0),{ignoreEncryption:true});
+          for(const pi of pis){const[e]=await outDoc.embedPages([sdOrig.getPages()[pi]]);dieOverlay.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
         }
       } else {
         let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);
-        const entry={ref:e,kind:'image'};
-        cacheFace.set(`${f.id}-0`,entry);
-        cacheBack.set(`${f.id}-0`,entry);
+        cache.set(`${f.id}-0`,{ref:e,kind:'image'});
       }
     }
 
@@ -3125,29 +3104,64 @@ async function exportPrintDiePDF(){
       const sheet=sheets[si];
       const ab=getArtGroupBounds(sheet,s.margin);
       const marksWithArt=Object.assign({artBounds:ab},markOpts);
-      const fp=outDoc.addPage([Wp,Hp]);
-      placeContent(fp,sheet,cacheFace,commonEmbed,s,Wp,Hp,'face');
-      placeMarks(fp,s,Wp,Hp,fontB,si,'Face',marksWithArt);
-      // Add generated die lines on selected side
-      if(dieSide==='face') addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
 
+      // --- FACE PAGE ---
+      const fp=outDoc.addPage([Wp,Hp]);
+      placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
+      placeMarks(fp,s,Wp,Hp,fontB,si,'Face',marksWithArt);
+      if(dieSide==='face'){
+        // For face die: overlay unstripped pages that have embedded dies
+        placeDieOverlay(fp,sheet,dieOverlay,s,Wp,Hp,'face');
+        addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
+      }
+
+      // --- BACK PAGE ---
       if(s.doubleSided){
-        // For "same" mode, always generate a back page
         let needsBack=true;
-        if(s.dblMode==='same'){
-          needsBack=true;
-        }
+        if(s.dblMode==='same') needsBack=true;
         if(needsBack){
           const bp=outDoc.addPage([Wp,Hp]);
-          placeContent(bp,sheet,cacheBack,commonEmbed,s,Wp,Hp,'back');
+          placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
           placeMarks(bp,s,Wp,Hp,fontB,si,'Back',marksWithArt);
-          if(dieSide==='back') addDieLinesToPage(bp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'back',s.flipAxis);
+          if(dieSide==='back'){
+            // Overlay unstripped pages on back for embedded dies (mirrored)
+            placeDieOverlay(bp,sheet,dieOverlay,s,Wp,Hp,'back');
+            addDieLinesToPage(bp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'back',s.flipAxis);
+          }
         }
       }
     }
     download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_PrintDie.pdf');
   }catch(err){alert('Print+Die export failed: '+err.message);console.error(err);}
   btn.disabled=false;btn.textContent='Download Print+Die PDF';
+}
+
+/* Place die overlay: draw the unstripped source page on top of the stripped content.
+   The stripped page is already drawn (clean print). This overlays the FULL original
+   page including its embedded die lines. The CMYK art is identical so it layers
+   invisibly — only the die spot color adds visible content. */
+function placeDieOverlay(page,sheet,dieOverlay,s,Wp,Hp,side){
+  if(!dieOverlay.size) return;
+  for(const p of sheet.placements){
+    const key=`${p.fileId}-${p.pageIndex}`;
+    const c=dieOverlay.get(key);
+    if(!c) continue; // no die overlay for this file (images, PDFs without die)
+    // Draw at the same position as the content, using drawItem
+    if(side==='face'){
+      const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+      drawItem(page,c,x,y,p,Wp,Hp);
+    } else {
+      let bx,by;
+      if(s.flipAxis==='horizontal'){
+        bx=(s.margin+p.x)*PTS;
+        by=(s.margin+p.y)*PTS;
+      } else {
+        bx=Wp-(s.margin+p.x+p.w)*PTS;
+        by=Hp-(s.margin+p.y+p.h)*PTS;
+      }
+      drawItem(page,c,bx,by,p,Wp,Hp,false,true,s.flipAxis);
+    }
+  }
 }
 
 function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieName, side, flipAxis){
