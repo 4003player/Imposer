@@ -8,6 +8,14 @@
 <script src="https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
 <script>
+// pdf.js for rendering PDF pages to canvas (press preview thumbnails)
+let pdfjsLib = null;
+import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs').then(mod => {
+  pdfjsLib = mod;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.mjs';
+}).catch(() => {});
+</script>
+<script>
 // Pre-load a real font file for PDF embedding (Caldera chokes on Type1 stub fonts)
 let slugFontBytes = null;
 fetch('https://cdn.jsdelivr.net/npm/@fontsource/roboto@5.0.8/files/roboto-latin-700-normal.woff')
@@ -325,6 +333,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <label id="regDotsLabel" style="display:none;font-size:12px;color:#666;align-self:center;gap:4px;cursor:pointer;user-select:none"><input type="checkbox" id="regDotsChk" checked style="cursor:pointer"> Reg dots</label>
       <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
       <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
+      <button class="btn" id="pressPreviewBtn" style="background:#8b5cf6;color:#fff">⬇ Press Preview (8.5×14)</button>
     </div>
     <div id="markOptions" style="display:none;margin-top:8px;text-align:center;font-size:12px;color:#666">
       <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeSlug" checked> Slug</label>
@@ -1679,6 +1688,7 @@ function removeFile(fid,pidx){
 }
 function invalidateLayout(){
   sheets=[];viewSheet=0;viewSide='face';sheetPrintQty=1;
+  _thumbCache.clear();
   el('previewBox').style.display='none';el('exportRow').style.display='none';
   el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
   el('layoutChoices').style.display='none';el('dieSideOptions').style.display='none';
@@ -3385,6 +3395,241 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
   }
 }
 
+/* === PRESS PREVIEW (8.5×14 low-rez for pressmen) === */
+
+// Render a source file page to a small canvas thumbnail (for press preview)
+// Uses pdf.js for PDFs, Image for rasters — same approach as Banner tool.
+const _thumbCache = new Map(); // key: "fileId-pageIndex" -> canvas
+async function getThumb(fileId, pageIndex, maxPx){
+  const key = `${fileId}-${pageIndex}`;
+  if(_thumbCache.has(key)) return _thumbCache.get(key);
+  const f = inputFiles.find(f => f.id === fileId);
+  if(!f) return null;
+  let canvas = null;
+  if(f.type === 'pdf' && pdfjsLib){
+    // Copy bytes before pdf.js detaches the ArrayBuffer
+    const rawCopy = new Uint8Array(f.bytes.slice(0));
+    const doc = await pdfjsLib.getDocument({ data: rawCopy }).promise;
+    const page = await doc.getPage(pageIndex + 1);
+    const vp0 = page.getViewport({ scale: 1 });
+    let scale = Math.min(maxPx / Math.max(vp0.width, vp0.height), 4);
+    const vp = page.getViewport({ scale });
+    canvas = document.createElement('canvas');
+    canvas.width = Math.round(vp.width);
+    canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  } else if(f.type === 'pdf'){
+    // pdf.js not loaded yet — can't render, return blank
+    return null;
+  } else {
+    // Raster image — decode and draw to canvas
+    const blob = new Blob([f.bytes], { type: f.mimeType || 'image/png' });
+    const url = URL.createObjectURL(blob);
+    const img = await new Promise((res, rej) => {
+      const el = new Image();
+      el.onload = () => { URL.revokeObjectURL(url); res(el); };
+      el.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode failed')); };
+      el.src = url;
+    });
+    const scale = Math.min(maxPx / Math.max(img.naturalWidth, img.naturalHeight), 1);
+    canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  }
+  _thumbCache.set(key, canvas);
+  return canvas;
+}
+
+async function exportPressPreview(){
+  const btn=el('pressPreviewBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S();
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+    // Legal size: 8.5 x 14 inches
+    const PW=8.5*PTS, PH=14*PTS;
+    const sMargin=0.375*PTS; // 3/8" page margin
+    const availW=PW-2*sMargin, availH=PH-2*sMargin;
+
+    // Pre-render thumbnails for all placements on all sheets
+    const thumbPx = 600; // max dimension for source thumbnails
+    const thumbMap = new Map();
+    for(const sheet of sheets){
+      for(const p of sheet.placements){
+        const key = `${p.fileId}-${p.pageIndex}`;
+        if(!thumbMap.has(key)){
+          const thumb = await getThumb(p.fileId, p.pageIndex, thumbPx);
+          if(thumb) thumbMap.set(key, thumb);
+        }
+      }
+    }
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const artBounds=getArtGroupBounds(sheet,s.margin);
+
+      // Cap canvas at ~4000px on the long side — same approach as Banner tool.
+      const MAX_PX=4000;
+      const dpi=Math.min(MAX_PX/s.stockW, MAX_PX/s.stockH);
+      const cw=Math.ceil(s.stockW*dpi);
+      const ch=Math.ceil(s.stockH*dpi);
+      const c=document.createElement('canvas');
+      c.width=cw;c.height=ch;
+      const ctx=c.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,cw,ch);
+      const D=dpi;
+
+      // Draw sheet content (placements) — render actual artwork thumbnails
+      for(const p of sheet.placements){
+        const px=s.margin+p.x, py=s.margin+p.y;
+        const x=px*D, y=py*D, w=p.w*D, h=p.h*D;
+
+        // Draw the source artwork into the placement rect
+        const thumb = thumbMap.get(`${p.fileId}-${p.pageIndex}`);
+        if(thumb){
+          // Clip to the placement rect and draw the thumbnail scaled to fit
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y, w, h);
+          ctx.clip();
+          // Scale thumb to cover the placement rect (same aspect as source)
+          const srcW = (p.srcW||p.w) * D;
+          const srcH = (p.srcH||p.h) * D;
+          const srcBl = (p.srcBleed||p.bleed||0) * D;
+          const usrBl = (p.bleed||0) * D;
+          // Offset to align trim: source bleed extends beyond trim on each side
+          const ox = x - (srcBl - usrBl);
+          const oy = y - (srcBl - usrBl);
+          if(p.rotated){
+            // Rotated 90° — swap W/H
+            ctx.translate(x + w, y);
+            ctx.rotate(Math.PI/2);
+            ctx.drawImage(thumb, 0, 0, srcH, srcW);
+          } else {
+            ctx.drawImage(thumb, ox, oy, srcW, srcH);
+          }
+          ctx.restore();
+        } else {
+          // No thumbnail available — light blue fill
+          ctx.fillStyle='#dbeafe';ctx.fillRect(x,y,w,h);
+        }
+
+        // Bleed rect (if any) — orange dashed
+        if(p.bleed>0){
+          ctx.strokeStyle='#f59e0b';ctx.lineWidth=Math.max(2,w/400);
+          ctx.setLineDash([6,4]);
+          ctx.strokeRect(x+p.bleed*D, y+p.bleed*D,
+            p.trimW*D, p.trimH*D);
+          ctx.setLineDash([]);
+        }
+        // Trim rect — thick blue
+        ctx.strokeStyle='#2563eb';ctx.lineWidth=Math.max(3,w/200);
+        ctx.strokeRect(x,y,w,h);
+        // Label — sized to the placement box
+        ctx.fillStyle='#1e3a5f';ctx.font=`bold ${Math.max(10,Math.min(28,w/8))}px sans-serif`;
+        ctx.textAlign='center';ctx.textBaseline='top';
+        let lbl=p.label;if(lbl&&lbl.length>30)lbl=lbl.substring(0,28)+'...';
+        // Draw label at top of placement
+        ctx.fillText(lbl,x+4,y+4);
+        // Size label
+        ctx.fillStyle='#64748b';ctx.font=`${Math.max(8,Math.min(16,w/12))}px sans-serif`;
+        ctx.fillText(`${p.trimW.toFixed(1)}"x${p.trimH.toFixed(1)}"`,x+w/2,y+h-Math.max(16,w/8));
+      }
+
+      // Draw stock outline (margin box)
+      ctx.strokeStyle='#cbd5e1';ctx.setLineDash([8,6]);ctx.lineWidth=1.5;
+      ctx.strokeRect(s.margin*D,s.margin*D,
+        (s.stockW-2*s.margin)*D,(s.stockH-2*s.margin)*D);
+      ctx.setLineDash([]);
+
+      // Stock border — thick
+      ctx.strokeStyle='#475569';ctx.lineWidth=3;
+      ctx.strokeRect(0,0,cw,ch);
+
+      // Reg dots — sized to canvas
+      ctx.fillStyle='#1d1d1f';
+      for(const d of getRegDots(s.stockW,s.stockH,artBounds)){
+        ctx.beginPath();ctx.arc(d.x*D,d.y*D,Math.max(3,dpi/24),0,Math.PI*2);ctx.fill();
+      }
+
+      // Hickeys
+      ctx.fillStyle='#1d1d1f';
+      for(const h of getHickeys(s.stockW,s.stockH)){
+        ctx.beginPath();
+        ctx.moveTo(h.x1*D,h.y1*D);
+        ctx.lineTo(h.x2*D,h.y2*D);
+        ctx.lineTo(h.x3*D,h.y3*D);
+        ctx.closePath();ctx.fill();
+      }
+
+      // Slug on canvas — below art group
+      const slugText=buildSlug(s,si,'Face');
+      ctx.fillStyle='#000';ctx.font=`bold ${Math.max(12,D/6)}px sans-serif`;
+      ctx.textAlign='center';ctx.textBaseline='top';
+      const slugY=(artBounds.y2+0.25)*D;
+      const slugCx=(artBounds.x+artBounds.w/2)*D;
+      ctx.fillText(slugText,slugCx,slugY);
+
+      // --- Convert canvas to JPEG bytes (same as Banner tool canvasToJpegBytes) ---
+      const dataUrl=c.toDataURL('image/jpeg',0.92);
+      const bin=atob(dataUrl.split(',')[1]);
+      const jpegArr=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++)jpegArr[i]=bin.charCodeAt(i);
+      const img=await outDoc.embedJpg(jpegArr);
+
+      // --- Place on 8.5x14 page ---
+      const sheetAspect=s.stockW/s.stockH;
+      const availAspect=availW/availH;
+      let drawW, drawH;
+      if(sheetAspect>availAspect){
+        drawW=availW; drawH=availW/sheetAspect;
+      } else {
+        drawH=availH; drawW=availH*sheetAspect;
+      }
+
+      const page=outDoc.addPage([PW,PH]);
+      const dx=(PW-drawW)/2, dy=(PH-drawH)/2;
+      page.drawImage(img,{x:dx,y:dy,width:drawW,height:drawH});
+
+      // Slug info at top of page
+      const slugSize=7;
+      const topMargin=0.25*PTS;
+      const slugParts=[];
+      if(s.jobName) slugParts.push(s.jobName);
+      if(s.jobNumber) slugParts.push('#'+s.jobNumber);
+      if(s.stockName) slugParts.push(s.stockName);
+      slugParts.push(`${s.stockW}"x${s.stockH}"`);
+      if(s.scalePercent && s.scalePercent!==100) slugParts.push(`Scale ${s.scalePercent}%`);
+      if(s.doubleSided){
+        const isLandscape=s.stockW>s.stockH;
+        const isTumble=isLandscape?(s.flipAxis==='vertical'):(s.flipAxis==='horizontal');
+        slugParts.push(`Double-sided ${isTumble?'Tumble':'Turn'}`);
+      }
+      slugParts.push(`Print ${sheet.printQty||1}x`);
+      if(sheets.length>1) slugParts.push(`Sheet ${si+1} of ${sheets.length}`);
+      const fullSlug=slugParts.join('  |  ');
+
+      const slugW=fontB.widthOfTextAtSize(fullSlug,slugSize);
+      page.drawText(fullSlug,{x:(PW-slugW)/2,y:PH-topMargin-slugSize,size:slugSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+
+      // "PRESS PREVIEW — NOT FOR PRODUCTION" watermark at bottom
+      const wmSize=6;
+      const wmText='PRESS PREVIEW — NOT FOR PRODUCTION';
+      const wmW=fontB.widthOfTextAtSize(wmText,wmSize);
+      page.drawText(wmText,{x:(PW-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+    }
+
+    const pdfBytes=await outDoc.save({useObjectStreams:false});
+    download(pdfBytes,fileName(s)+'_PressPreview.pdf');
+  }catch(err){alert('Press preview failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='⬇ Press Preview (8.5×14)';
+}
+
 function download(bytes,name){
   const blob=new Blob([bytes],{type:'application/pdf'}),url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();
@@ -3396,6 +3641,7 @@ el('printBtn').addEventListener('click',exportPrintPDF);
 el('printDieBtn').addEventListener('click',exportPrintDiePDF);
 el('opwBtn').addEventListener('click',exportOPWPDF);
 el('cutBtn').addEventListener('click',exportCutPDF);
+el('pressPreviewBtn').addEventListener('click',exportPressPreview);
 </script>
 </body>
 </html>
