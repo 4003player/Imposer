@@ -313,7 +313,10 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 
   <!-- LAYOUT -->
   <div id="layoutSection" style="display:none">
-    <button class="btn btn-primary" id="arrangeBtn">Arrange Layout</button>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <button class="btn btn-primary" id="arrangeBtn" style="flex:1">Arrange Layout</button>
+      <button class="btn" id="smartOrientBtn" style="flex:1;background:#059669;color:#fff;display:none" onclick="smartOrientLayout()">🔄 Smart Orient (Both-axis flip)</button>
+    </div>
     <div id="layoutChoices" style="display:none;margin-top:12px">
       <div class="card">
         <h2>Choose Layout</h2>
@@ -333,6 +336,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <label id="regDotsLabel" style="display:none;font-size:12px;color:#666;align-self:center;gap:4px;cursor:pointer;user-select:none"><input type="checkbox" id="regDotsChk" checked style="cursor:pointer"> Reg dots</label>
       <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
       <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
+      <button class="btn" id="fitSheetBtn" style="background:#6b7280;color:#fff" onclick="fitSheetToLayout()">Fit Sheet to Layout</button>
       <button class="btn" id="pressPreviewBtn" style="background:#8b5cf6;color:#fff">⬇ Press Preview (8.5×14)</button>
     </div>
     <div id="markOptions" style="display:none;margin-top:8px;text-align:center;font-size:12px;color:#666">
@@ -1592,6 +1596,9 @@ function pickBacksAll(fid){
 function renderFileList(){
   if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
   el('filesSection').style.display='';el('layoutSection').style.display='';
+  // Show Smart Orient button only in double-sided different mode
+  const smartBtn=el('smartOrientBtn');
+  if(smartBtn) smartBtn.style.display=(S().doubleSided && S().dblMode==='different')?'':'none';
   const s=S(),isDbl=s.doubleSided,isDblDiff=isDbl&&s.dblMode==='different';
   let faceOpts=[];
   if(isDblDiff)for(const f of inputFiles)for(const p of f.pages)
@@ -1659,9 +1666,12 @@ function renderFileList(){
       if(p.side==='back'){
         html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'backRef',this.value)"><option value="">--pair--</option>`;
         for(const fo of faceOpts){const v=`${fo.fileId}-${fo.pageIndex}`;
-          html+=`<option value="${v}" ${p.backRef&&p.backRef.fileId===fo.fileId&&p.backRef.pageIndex===fo.pageIndex?'selected':''}>${esc(fo.label)}</option>`;}
+          html+=`<option value="${v}" ${p.backRef&&!p.backRef.blank&&p.backRef.fileId===fo.fileId&&p.backRef.pageIndex===fo.pageIndex?'selected':''}>${esc(fo.label)}</option>`;}
         html+=`</select> <span class="tag tag-back">BACK</span>`;
-      }else html+=` <span class="tag tag-face">FACE</span>`;
+      }else{
+        html+=` <span class="tag tag-face">FACE</span>`;
+        html+=` <label style="font-size:10px;color:#86868b;margin-left:6px;cursor:pointer;user-select:none"><input type="checkbox" ${p.noBack?'checked':''} onchange="updatePage(${f.id},${p.index},'noBack',this.checked?1:0)" style="cursor:pointer"> No Back</label>`;
+      }
     }
     if(isDbl&&s.dblMode==='common')html+=` <span class="tag tag-common">+common back</span>`;
     if(!isBack)html+=` <input type="number" class="qty-input" value="${p.qty}" min="0" max="200" tabindex="${qtyIdx++}" placeholder="qty" onchange="updatePage(${f.id},${p.index},'qty',this.value)">`;
@@ -1677,7 +1687,8 @@ function updatePage(fid,pidx,field,val){
   if(field==='qty'){p.qty=Math.max(0,parseInt(val)||0);p.qtyOverride=true;}
   else if(field==='orient'){p.orient=val;p.orientOverride=(val!==S().masterOrient);}
   else if(field==='side'){p.side=val;if(val==='face')p.backRef=null;}
-  else if(field==='backRef'){if(val){const[a,b]=val.split('-').map(Number);p.backRef={fileId:a,pageIndex:b};}else p.backRef=null;}
+  else if(field==='backRef'){if(val==='blank'){p.backRef={blank:true};}else if(val){const[a,b]=val.split('-').map(Number);p.backRef={fileId:a,pageIndex:b};}else p.backRef=null;}
+  else if(field==='noBack'){p.noBack=!!val;}
   invalidateLayout();renderFileList();
 }
 function removeFile(fid,pidx){
@@ -2165,6 +2176,27 @@ function drawChoiceThumb(canvas,cand){
   }
 }
 
+/* === SHEET DEDUP === */
+function sheetSignature(sh){
+  // Signature: sorted list of fileId-pageIndex at rounded positions
+  return sh.placements.map(p=>
+    `${p.fileId}-${p.pageIndex}@${Math.round(p.x*100)},${Math.round(p.y*100)},${p.rotated?'R':'N'}`
+  ).sort().join('|');
+}
+function deduplicateSheets(){
+  if(sheets.length<=1)return;
+  const merged=[];
+  for(const sh of sheets){
+    const sig=sheetSignature(sh);
+    const existing=merged.find(m=>m._sig===sig);
+    if(existing){existing.printQty=(existing.printQty||1)+1;}
+    else{sh._sig=sig;merged.push(sh);}
+  }
+  // Clean up temp sig
+  for(const m of merged)delete m._sig;
+  sheets=merged;
+}
+
 function selectLayout(idx){
   const cand=window._layoutCandidates[idx];
   if(!cand)return;
@@ -2193,17 +2225,22 @@ function selectLayout(idx){
     sheets.push({placements:pl,printQty:1});
     unplacedPool=result.unplaced;
   }
+  // Deduplicate identical sheets: if two sheets have the same files at same positions, merge printQty
+  deduplicateSheets();
   sheetPrintQty=1;
 
   viewSheet=0;viewSide='face';drawPreview();
 
-  const totalPlaced=sheets.reduce((sum,sh)=>sum+sh.placements.length,0);
-  el('layoutInfo').textContent=`${perSheet} up per sheet · ${sheets.length} sheet${sheets.length>1?'s':''}`+(s.doubleSided?' | Double-sided':'');
+  const totalPlaced=sheets.reduce((sum,sh)=>sum+sh.placements.length*(sh.printQty||1),0);
+  const hasDedup=sheets.some(sh=>(sh.printQty||1)>1);
+  el('layoutInfo').textContent=`${perSheet} up per sheet · ${sheets.length} sheet${sheets.length>1?'s':''}`+(hasDedup?' (deduped)':'')+(s.doubleSided?' | Double-sided':'');
   const cd=el('sheetCalc');cd.style.display='';
   if(sheets.length===1){
-    cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print 1 time</b> = <b>${totalPlaced}</b> total`;
+    const pq=sheets[0].printQty||1;
+    cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print ${pq} time${pq>1?'s':''}</b> = <b>${totalPlaced}</b> total`;
   }else{
-    cd.innerHTML=`<b>${totalPlaced}</b> total across <b>${sheets.length} sheets</b> (${perSheet} per sheet)`+(unplacedPool.length>0?` · <span style="color:#b91c1c">${unplacedPool.length} didn't fit</span>`:'');
+    let detail=sheets.map((sh,i)=>`Sheet ${i+1}: ${sh.placements.length} up × ${sh.printQty||1}`).join(', ');
+    cd.innerHTML=`<b>${totalPlaced}</b> total across <b>${sheets.length} sheets</b> (${detail})`+(unplacedPool.length>0?` · <span style="color:#b91c1c">${unplacedPool.length} didn't fit</span>`:'');
   }
 
   el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';el('markOptions').style.display=perSheet>0?'':'none';
@@ -2268,7 +2305,8 @@ function drawPreview(){
   ctx.strokeStyle='#d2d2d7';ctx.setLineDash([4,3]);ctx.strokeRect(s.margin*scale,s.margin*scale,(s.stockW-2*s.margin)*scale,(s.stockH-2*s.margin)*scale);ctx.setLineDash([]);
   for(const p of sheet.placements){
     let px,py;
-    if(viewSide==='back'){
+    const isSmart=!!sheet.smartOrient;
+    if(!isSmart && viewSide==='back'){
       if(s.flipAxis==='horizontal'){
         px=s.margin+p.x; py=s.stockH-s.margin-p.y-p.h;
       }else{
@@ -2277,12 +2315,39 @@ function drawPreview(){
     }
     else{px=s.margin+p.x;py=s.margin+p.y;}
     const x=px*scale,y=py*scale,w=p.w*scale,h=p.h*scale;
-    ctx.fillStyle=viewSide==='back'?'#fef2f2':'#eff6ff';ctx.fillRect(x,y,w,h);
+    // Smart orient: color face cells blue, back cells pink/yellow
+    if(isSmart){
+      const isBackCell=p.label&&(p.label.startsWith('(B) ')||p.label==='(no back)');
+      ctx.fillStyle=p._blank?'#f0f0f0':isBackCell?'#fef2f2':'#eff6ff';
+    } else {
+      ctx.fillStyle=viewSide==='back'?'#fef2f2':'#eff6ff';
+    }
+    ctx.fillRect(x,y,w,h);
     if(p.bleed>0){ctx.strokeStyle='#e040a0';ctx.lineWidth=1.5;ctx.strokeRect(x+p.bleed*scale,y+p.bleed*scale,p.trimW*scale,p.trimH*scale);}
     else{ctx.strokeStyle='#0071e3';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);}
-    ctx.fillStyle='#666';ctx.font=`${Math.max(7,Math.min(11,w/12))}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
-    let lbl=viewSide==='back'?'(B) '+p.label:p.label;if(lbl.length>24)lbl=lbl.substring(0,22)+'...';
-    ctx.fillText(lbl,x+w/2,y+h/2);
+    ctx.fillStyle=p._blank?'#ccc':'#666';ctx.font=`${Math.max(7,Math.min(11,w/12))}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    let lbl=p.label;
+    if(!isSmart && viewSide==='back'){
+      const bk=findBackSource(p);
+      if(bk&&bk.blank){lbl='(no back)';ctx.fillStyle='#ccc';}
+      else if(bk&&!bk.common&&!bk.blank){
+        const bf=inputFiles.find(f=>f.id===bk.fileId);
+        if(bf){const bp=bf.pages[bk.pageIndex];lbl=bf.name.replace(/\.[^.]+$/,'')+(bf.pages.length>1?' p'+(bp.index+1):'');}
+        lbl='(B) '+lbl;
+      } else if(bk&&bk.common&&commonBackData){lbl='(B) '+(commonBackData.name||'Common Back');}
+      else lbl='(B) '+lbl;
+    }
+    if(lbl.length>24)lbl=lbl.substring(0,22)+'...';
+    // Draw label, rotated 180° for smart-rotated items
+    if(isSmart && p.smartRot180){
+      ctx.save();
+      ctx.translate(x+w/2,y+h/2);
+      ctx.rotate(Math.PI);
+      ctx.fillText(lbl,0,0);
+      ctx.restore();
+    } else {
+      ctx.fillText(lbl,x+w/2,y+h/2);
+    }
   }
   const artBounds=getArtGroupBounds(sheet,s.margin);
   ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH,artBounds)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
@@ -2290,11 +2355,17 @@ function drawPreview(){
   // Slug centered below art group bottom, 1/4" down (corners have reg dots, center is clear)
   const slugY=artBounds.y2+0.25;
   const slugCenterX=artBounds.x + artBounds.w/2;
+  const isSmart=!!sheet.smartOrient;
   ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,12*scale)}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='top';
-  ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),slugCenterX*scale,slugY*scale);
+  if(isSmart){
+    const flipDesc=sheet.flipMode==='both'?'Flip either axis':'L/R flip only';
+    ctx.fillText(buildSlug(s,viewSheet,'Smart Orient — '+flipDesc),slugCenterX*scale,slugY*scale);
+  } else {
+    ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),slugCenterX*scale,slugY*scale);
+  }
   const nav=el('sheetNav');let nh='';
   if(sheets.length>1)nh+=`Sheet ${viewSheet+1}/${sheets.length} <button onclick="prevSheet()">&#9664;</button><button onclick="nextSheet()">&#9654;</button>`;
-  if(s.doubleSided)nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
+  if(s.doubleSided&&!isSmart)nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
   nav.innerHTML=nh;
 }
 
@@ -2315,16 +2386,306 @@ function prevSheet(){if(viewSheet>0){viewSheet--;drawPreview();}}
 function nextSheet(){if(viewSheet<sheets.length-1){viewSheet++;drawPreview();}}
 function toggleSide(){viewSide=viewSide==='face'?'back':'face';drawPreview();}
 
+/* === FIT SHEET TO LAYOUT === */
+function fitSheetToLayout(){
+  if(!sheets.length)return;
+  const s=S();
+  // Compute global art group bounds across ALL sheets
+  let gMinX=Infinity,gMinY=Infinity,gMaxX=-Infinity,gMaxY=-Infinity;
+  for(const sh of sheets){
+    for(const p of sh.placements){
+      const px=s.margin+p.x, py=s.margin+p.y;
+      gMinX=Math.min(gMinX,px); gMinY=Math.min(gMinY,py);
+      gMaxX=Math.max(gMaxX,px+p.w); gMaxY=Math.max(gMaxY,py+p.h);
+    }
+  }
+  if(gMinX>=gMaxX)return;
+  const artW=gMaxX-gMinX, artH=gMaxY-gMinY;
+  // New sheet = art + 1" slug margin on each side
+  const slugMargin=1.0;
+  const newW=artW+2*slugMargin, newH=artH+2*slugMargin;
+  // Offset all placements so art starts at (slugMargin - s.margin + bleed_offset, ...)
+  // The art currently starts at (gMinX, gMinY) in stock coords.
+  // We want it at (slugMargin, slugMargin) in the new sheet.
+  const dx=slugMargin-gMinX, dy=slugMargin-gMinY;
+  for(const sh of sheets){
+    for(const p of sh.placements){
+      p.x+=dx; p.y+=dy;
+    }
+  }
+  // Update stock dims
+  s.stockW=parseFloat(newW.toFixed(4)); s.stockH=parseFloat(newH.toFixed(4));
+  el('stockW').value=s.stockW; el('stockH').value=s.stockH;
+  viewSheet=0; drawPreview();
+  el('layoutInfo').textContent=`Fit to ${s.stockW.toFixed(2)}" × ${s.stockH.toFixed(2)}" (1" slug margin)`;
+}
+
+/* === SMART ORIENT (both-axis / single-axis flip) === */
+function smartOrientLayout(){
+  const s=S();
+  if(!s.doubleSided || s.dblMode!=='different'){
+    alert('Smart Orient requires Double-sided + Different mode.');return;
+  }
+  applyBleedOverride();
+  const scaleFactor=s.scalePercent/100;
+
+  // Collect face/back pairs
+  const pairs=[];
+  for(const f of inputFiles)for(const p of f.pages){
+    if(p.side!=='face')continue;
+    // Find the back for this face
+    let backFile=null, backPage=null;
+    if(!p.noBack){
+      for(const bf of inputFiles)for(const bp of bf.pages){
+        if(bp.side==='back'&&bp.backRef&&bp.backRef.fileId===f.id&&bp.backRef.pageIndex===p.index){
+          backFile=bf; backPage=bp; break;
+        }
+        if(backFile)break;
+      }
+    }
+    const qty=p.qty||1;
+    for(let q=0;q<qty;q++){
+      pairs.push({
+        faceFileId:f.id, facePageIndex:p.index,
+        backFileId:backFile?backFile.id:null, backPageIndex:backPage?backPage.index:null,
+        noBack:!!p.noBack || !backFile,
+        physW:p.physW*scaleFactor, physH:p.physH*scaleFactor,
+        trimW:p.trimW*scaleFactor, trimH:p.trimH*scaleFactor,
+        bleed:p.bleed*scaleFactor,
+        srcW:(p.srcW||p.physW)*scaleFactor, srcH:(p.srcH||p.physH)*scaleFactor,
+        srcBleed:(p.srcBleed!==undefined?p.srcBleed:p.bleed)*scaleFactor,
+        enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
+        scaleFactor:scaleFactor,
+        faceName:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?' p'+(p.index+1):''),
+        backName:backFile?(backFile.name.replace(/\.[^.]+$/,'')+(backFile.pages.length>1?' p'+(backPage.index+1):'')):'',
+      });
+    }
+  }
+
+  if(pairs.length<2){
+    alert('Smart Orient needs at least 2 face/back pairs.');return;
+  }
+
+  // Check all same size (smart orient only works for uniform sizes)
+  const refW=pairs[0].trimW, refH=pairs[0].trimH;
+  if(!pairs.every(p=>Math.abs(p.trimW-refW)<0.01 && Math.abs(p.trimH-refH)<0.01)){
+    alert('Smart Orient requires all pieces to be the same size.');return;
+  }
+
+  // Determine piece dimensions (portrait orientation: trimW <= trimH)
+  const pieceW=Math.min(refW,refH), pieceH=Math.max(refW,refH);
+  const physW=Math.min(pairs[0].physW,pairs[0].physH), physH=Math.max(pairs[0].physW,pairs[0].physH);
+  const isRotated=refW>refH; // source is landscape, needs 90° rotation to become portrait
+  const gut=s.gutter;
+
+  // The smart orient layout needs exactly 2× pieces (each pair = 1 face + 1 back on same side)
+  // Total cavities = pairs.length * 2 (face + back for each pair)
+  const totalCavities=pairs.length*2;
+
+  // Find best grid within stock (content area = stock - 2*margin)
+  const cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
+  const bl=pairs[0].bleed;
+
+  // Try all even×even and even×odd grids
+  const candidates=[];
+
+  function tryGrid(cols,rows,rotItems){
+    // Item dims when placed on sheet
+    const iW=rotItems?pieceH:pieceW, iH=rotItems?pieceW:pieceH;
+    const iTrimW=rotItems?Math.max(refW,refH):Math.min(refW,refH);
+    const iTrimH=rotItems?Math.min(refW,refH):Math.max(refW,refH);
+    const needW=cols*iTrimW+(cols-1)*gut;
+    const needH=rows*iTrimH+(rows-1)*gut;
+    if(needW>cW+0.001||needH>cH+0.001)return;
+    const capacity=cols*rows;
+    if(capacity<totalCavities)return;
+
+    const bothAxis=cols%2===0&&rows%2===0;
+    const lrOnly=cols%2===0; // even cols, possibly odd rows
+    // Odd cols → fall back to standard layout (per spec)
+    if(cols%2!==0)return;
+
+    let flipMode;
+    if(bothAxis) flipMode='both';
+    else if(lrOnly) flipMode='lr';
+    else return; // shouldn't happen since we filter odd cols above
+
+    const waste=1-(totalCavities*iTrimW*iTrimH)/(cW*cH);
+    const extraCavities=capacity-totalCavities;
+    candidates.push({cols,rows,rotItems,iW,iH,iTrimW,iTrimH,capacity,flipMode,waste,extraCavities,needW,needH});
+  }
+
+  // Try portrait and landscape (rotated 90°) item orientations
+  for(const rotItems of[false,true]){
+    for(let cols=2;cols<=40;cols+=2){ // even cols only
+      for(let rows=1;rows<=40;rows++){
+        tryGrid(cols,rows,rotItems);
+      }
+    }
+  }
+
+  if(!candidates.length){
+    alert('No smart orient layout fits on the stock. Try a larger stock size.');return;
+  }
+
+  // Sort: prefer both-axis over lr-only, then fewest extra cavities, then least waste
+  candidates.sort((a,b)=>{
+    const ap=a.flipMode==='both'?0:1, bp=b.flipMode==='both'?0:1;
+    if(ap!==bp)return ap-bp;
+    if(a.extraCavities!==b.extraCavities)return a.extraCavities-b.extraCavities;
+    return a.waste-b.waste;
+  });
+
+  const best=candidates[0];
+
+  if(best.extraCavities>0){
+    alert(`Smart Orient needs ${best.capacity} cavities (${best.cols}×${best.rows}) but you have ${totalCavities} face+back pieces (${pairs.length} pairs).\n\nThat's ${best.extraCavities} empty cavit${best.extraCavities===1?'y':'ies'}.\n\nAdjust quantities to fill the grid, or add extra files. Each face needs a paired back.`);
+    return;
+  }
+
+  // Build the layout!
+  // Rules:
+  // - Checkerboard F/B pattern
+  // - For portrait items: rows alternate 180° (for both-axis)
+  //   For single row with even cols: left half=B, right half=F (work-and-turn)
+  //   For odd rows with even cols: middle row uses left=B/right=F split
+  // - For rotated (landscape) items: cols alternate 180°
+
+  const placements=[];
+  let pairIdx=0;
+  const half=best.cols/2;
+
+  for(let r=0;r<best.rows;r++){
+    for(let c=0;c<best.cols;c++){
+      const x=c*(best.iTrimW+gut)-bl;
+      const y=r*(best.iTrimH+gut)-bl;
+      let isFace, rot180=false;
+
+      if(best.flipMode==='both'){
+        // Even×even: checkerboard, rows alternate 180°
+        isFace=(r+c)%2===0;
+        rot180=r%2===1;
+      } else {
+        // Even cols × odd rows (lr-only)
+        const isMiddleRow=(best.rows%2===1)&&(r===Math.floor(best.rows/2));
+        if(isMiddleRow||best.rows===1){
+          // Split row: left half=B, right half=F
+          isFace=c>=half;
+          rot180=false;
+        } else {
+          // Paired rows: checkerboard + 180° alternation
+          isFace=(r+c)%2===0;
+          rot180=r%2===1;
+        }
+      }
+
+      // Pick the pair to use
+      const pair=pairs[pairIdx%pairs.length];
+      const fileId=isFace?pair.faceFileId:pair.backFileId;
+      const pageIndex=isFace?pair.facePageIndex:pair.backPageIndex;
+      // Advance pair index: each pair contributes 2 cavities (F+B)
+      // We need to assign pairs so each face and back from same pair appear on the sheet
+      // The interleaving is handled by the checkerboard — pairs fill in order
+
+      const itemRotated=best.rotItems?(refW<=refH):refW>refH;
+      placements.push({
+        fileId:fileId, pageIndex:pageIndex,
+        x:x, y:y,
+        w:best.iW+2*bl, h:best.iH+2*bl,
+        trimW:best.iTrimW, trimH:best.iTrimH,
+        bleed:bl, rotated:itemRotated,
+        canFlip:false,
+        physW:best.rotItems?physH:physW, physH:best.rotItems?physW:physH,
+        trimWOrig:best.rotItems?Math.max(refW,refH):Math.min(refW,refH),
+        trimHOrig:best.rotItems?Math.min(refW,refH):Math.max(refW,refH),
+        srcW:pair.srcW, srcH:pair.srcH, srcBleed:pair.srcBleed,
+        enlargeBleed:pair.enlargeBleed, diePaths:pair.diePaths,
+        scaleFactor:pair.scaleFactor,
+        smartRot180:rot180,
+        label:(isFace?pair.faceName:'(B) '+pair.backName)||'piece',
+        type:inputFiles.find(f2=>f2.id===fileId)?.type||'pdf',
+      });
+    }
+  }
+
+  // Assign pairs to cavities properly
+  // Collect face slots and back slots, assign pairs in order
+  const faceSlots=placements.filter((_,i)=>{
+    const r=Math.floor(i/best.cols), c=i%best.cols;
+    if(best.flipMode==='both') return(r+c)%2===0;
+    const isMiddleRow=(best.rows%2===1)&&(r===Math.floor(best.rows/2));
+    if(isMiddleRow||best.rows===1) return c>=half;
+    return(r+c)%2===0;
+  });
+  const backSlots=placements.filter((_,i)=>{
+    const r=Math.floor(i/best.cols), c=i%best.cols;
+    if(best.flipMode==='both') return(r+c)%2!==0;
+    const isMiddleRow=(best.rows%2===1)&&(r===Math.floor(best.rows/2));
+    if(isMiddleRow||best.rows===1) return c<half;
+    return(r+c)%2!==0;
+  });
+
+  for(let i=0;i<pairs.length;i++){
+    const pair=pairs[i];
+    if(i<faceSlots.length){
+      faceSlots[i].fileId=pair.faceFileId;
+      faceSlots[i].pageIndex=pair.facePageIndex;
+      faceSlots[i].label=pair.faceName;
+      faceSlots[i].type=inputFiles.find(f2=>f2.id===pair.faceFileId)?.type||'pdf';
+    }
+    if(i<backSlots.length){
+      backSlots[i].fileId=pair.noBack?null:pair.backFileId;
+      backSlots[i].pageIndex=pair.noBack?null:pair.backPageIndex;
+      backSlots[i].label=pair.noBack?'(no back)':'(B) '+pair.backName;
+      backSlots[i].type=pair.noBack?null:(inputFiles.find(f2=>f2.id===pair.backFileId)?.type||'pdf');
+      if(pair.noBack) backSlots[i]._blank=true;
+    }
+  }
+
+  // Center placements in content area
+  centerPlacements(placements,cW,cH);
+
+  // Build sheets — smart orient is always single-sheet (both sides printed from one file)
+  sheets=[{placements:placements,printQty:1,smartOrient:true,flipMode:best.flipMode}];
+  sheetPrintQty=1;
+  viewSheet=0;viewSide='face';
+
+  // Update stock display
+  el('stockW').value=s.stockW; el('stockH').value=s.stockH;
+  drawPreview();
+
+  const flipDesc=best.flipMode==='both'?'✅ Flip either axis':'⚠️ L/R flip only';
+  el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${best.capacity} cavities (${pairs.length} pairs) | ${flipDesc}`;
+  const cd=el('sheetCalc');cd.style.display='';
+  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${best.flipMode==='both'?'Both-axis flip ✅':'L/R flip only ⚠️'} · Print 1 time · Face+Back on same side`;
+
+  el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
+  el('dieSideOptions').style.display='none'; // No separate back side in smart orient
+  el('layoutChoices').style.display='none';
+}
+
 function findBackSource(p){
   const s=S();if(!s.doubleSided)return null;
-  if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
-  if(s.dblMode==='common')return commonBackData?{common:true}:null;
-  // 'different' mode: backRef lives on the BACK page, pointing to its paired face.
+  if(s.dblMode==='same'){
+    // Check if this face page has noBack flag
+    const ff=inputFiles.find(f2=>f2.id===p.fileId);
+    if(ff){const pg=ff.pages.find(pg2=>pg2.index===p.pageIndex);if(pg&&pg.noBack)return{blank:true};}
+    return{fileId:p.fileId,pageIndex:p.pageIndex};
+  }
+  if(s.dblMode==='common'){
+    const ff=inputFiles.find(f2=>f2.id===p.fileId);
+    if(ff){const pg=ff.pages.find(pg2=>pg2.index===p.pageIndex);if(pg&&pg.noBack)return{blank:true};}
+    return commonBackData?{common:true}:null;
+  }
+  // 'different' mode: check noBack on face first
+  const ff=inputFiles.find(f2=>f2.id===p.fileId);
+  if(ff){const pg=ff.pages.find(pg2=>pg2.index===p.pageIndex);if(pg&&pg.noBack)return{blank:true};}
   // Search all back pages for one whose backRef matches this face placement.
   for(const f of inputFiles){
     for(const pg of f.pages){
       if(pg.side==='back'&&pg.backRef&&
          pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
+        if(pg.backRef.blank) return {blank:true};
         return{fileId:f.id,pageIndex:pg.index};
       }
     }
@@ -2755,7 +3116,11 @@ async function exportPrintPDF(){
       ? await outDoc.embedFont(slugFontBytes, {subset:true})
       : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
     const cache=new Map(),used=new Set();
-    for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+    for(const sh of sheets)for(const p of sh.placements){
+      if(p._blank||p.fileId==null)continue;
+      used.add(`${p.fileId}-${p.pageIndex}`);
+      if(!sh.smartOrient){const bk=findBackSource(p);if(bk&&!bk.common&&!bk.blank)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+    }
     for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
       if(f.type==='pdf'){
         // Collect die CS names from pages that have die paths
@@ -2789,8 +3154,8 @@ async function exportPrintPDF(){
     for(let si=0;si<sheets.length;si++){
       const sheet=sheets[si];
       const ab=getArtGroupBounds(sheet,s.margin);
-      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,'Face',{artBounds:ab});
-      if(s.doubleSided){
+      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,sheet.smartOrient?'Smart Orient':'Face',{artBounds:ab});
+      if(s.doubleSided && !sheet.smartOrient){
         // For "same" mode, always generate a back page — the back uses the same art
         // but positioned for the other side of the sheet (flipped), so it's never redundant.
         let needsBack=true;
@@ -2811,14 +3176,17 @@ function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
   for(const p of sheet.placements){
     let c;
     if(side==='back'){
-      const bk=findBackSource(p);if(!bk)continue;
+      const bk=findBackSource(p);if(!bk||bk.blank)continue;
       if(bk.common){c=commonEmbed;if(!c)continue;}
       else{c=cache.get(`${bk.fileId}-${bk.pageIndex}`);if(!c)continue;}
-    }else{c=cache.get(`${p.fileId}-${p.pageIndex}`);if(!c)continue;}
+    }else{
+      if(p._blank)continue; // blank cavity in smart orient
+      c=cache.get(`${p.fileId}-${p.pageIndex}`);if(!c)continue;
+    }
     const w=p.w*PTS,h=p.h*PTS;
     if(side==='face'){
       const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
-      drawItem(page,c,x,y,p,Wp,Hp);
+      drawItem(page,c,x,y,p,Wp,Hp,p.smartRot180||false);
     }else{
       // Back side: mirror position along flip axis.
       // TB (horizontal): Y-mirrored position + 180° content rotation
