@@ -1598,7 +1598,11 @@ function renderFileList(){
   el('filesSection').style.display='';el('layoutSection').style.display='';
   // Show Smart Orient button only in double-sided different mode
   const smartBtn=el('smartOrientBtn');
-  if(smartBtn) smartBtn.style.display=(S().doubleSided && S().dblMode==='different')?'':'none';
+  if(smartBtn){
+    const showSmart=S().doubleSided && S().dblMode==='different';
+    smartBtn.style.display=showSmart?'':'none';
+    if(!showSmart) console.log('[SmartOrient] button hidden — doubleSided='+S().doubleSided+' dblMode='+S().dblMode);
+  }
   const s=S(),isDbl=s.doubleSided,isDblDiff=isDbl&&s.dblMode==='different';
   let faceOpts=[];
   if(isDblDiff)for(const f of inputFiles)for(const p of f.pages)
@@ -1707,7 +1711,9 @@ function invalidateLayout(){
   const smartBtn=el('smartOrientBtn');
   if(smartBtn){
     const s=S();
-    smartBtn.style.display=(s.doubleSided && s.dblMode==='different')?'':'none';
+    const showSmart=s.doubleSided && s.dblMode==='different';
+    smartBtn.style.display=showSmart?'':'none';
+    if(!showSmart) console.log('[SmartOrient] button hidden in invalidateLayout — doubleSided='+s.doubleSided+' dblMode='+s.dblMode);
   }
 }
 
