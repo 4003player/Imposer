@@ -3997,19 +3997,29 @@ async function exportPressPreview(){
       for(let i=0;i<bin.length;i++)jpegArr[i]=bin.charCodeAt(i);
       const img=await outDoc.embedJpg(jpegArr);
 
-      // --- Place on 8.5x14 page ---
+      // --- Place on 8.5x14 page — orient to maximize paper usage ---
       const sheetAspect=s.stockW/s.stockH;
-      const availAspect=availW/availH;
-      let drawW, drawH;
-      if(sheetAspect>availAspect){
-        drawW=availW; drawH=availW/sheetAspect;
-      } else {
-        drawH=availH; drawW=availH*sheetAspect;
-      }
+      // Try both portrait (PW×PH) and landscape (PH×PW) page orientations
+      const fitPortrait=(()=>{
+        const a=availW/availH;
+        let dw,dh;
+        if(sheetAspect>a){dw=availW;dh=availW/sheetAspect;}
+        else{dh=availH;dw=availH*sheetAspect;}
+        return {dw,dh,area:dw*dh,rotated:false,pw:PW,ph:PH};
+      })();
+      const fitLandscape=(()=>{
+        const lAvailW=availH, lAvailH=availW; // swap available dims
+        const a=lAvailW/lAvailH;
+        let dw,dh;
+        if(sheetAspect>a){dw=lAvailW;dh=lAvailW/sheetAspect;}
+        else{dh=lAvailH;dw=lAvailH*sheetAspect;}
+        return {dw,dh,area:dw*dh,rotated:true,pw:PH,ph:PW};
+      })();
+      const fit=fitLandscape.area>fitPortrait.area?fitLandscape:fitPortrait;
 
-      const page=outDoc.addPage([PW,PH]);
-      const dx=(PW-drawW)/2, dy=(PH-drawH)/2;
-      page.drawImage(img,{x:dx,y:dy,width:drawW,height:drawH});
+      const page=outDoc.addPage([fit.pw,fit.ph]);
+      const dx=(fit.pw-fit.dw)/2, dy=(fit.ph-fit.dh)/2;
+      page.drawImage(img,{x:dx,y:dy,width:fit.dw,height:fit.dh});
 
       // Slug info at top of page
       const slugSize=7;
@@ -4030,13 +4040,13 @@ async function exportPressPreview(){
       const fullSlug=slugParts.join('  |  ');
 
       const slugW=fontB.widthOfTextAtSize(fullSlug,slugSize);
-      page.drawText(fullSlug,{x:(PW-slugW)/2,y:PH-topMargin-slugSize,size:slugSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+      page.drawText(fullSlug,{x:(fit.pw-slugW)/2,y:fit.ph-topMargin-slugSize,size:slugSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
 
       // "PRESS PREVIEW — NOT FOR PRODUCTION" watermark at bottom
       const wmSize=6;
       const wmText='PRESS PREVIEW — NOT FOR PRODUCTION';
       const wmW=fontB.widthOfTextAtSize(wmText,wmSize);
-      page.drawText(wmText,{x:(PW-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+      page.drawText(wmText,{x:(fit.pw-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
     }
 
     const pdfBytes=await outDoc.save({useObjectStreams:false});
