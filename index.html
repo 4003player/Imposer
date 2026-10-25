@@ -2604,29 +2604,17 @@ function smartOrientLayout(){
         // Swap face/back in bottom half to maintain flip symmetry
         if(!top) isFace=!isFace;
       } else if(best.flipMode==='lr'){
-        // Even cols × odd rows: left/right split
+        // Even cols × odd rows: L/R only — simple left/right split, all upright
+        // Left half = B, right half = F, no 180° rotation
         const left=c<halfC;
-        const isMiddleRow=best.rows%2===1 && r===halfR;
-        isFace=!left;  // right=Face, left=Back
-        if(isMiddleRow){
-          rot180=false;
-        } else {
-          const top=r<halfR;
-          rot180=!top;
-          if(!top) isFace=!isFace;
-        }
+        isFace=!left;
+        rot180=false;
       } else {
-        // Odd cols × even rows (T/B only): top/bottom split
+        // Odd cols × even rows (T/B only): simple top/bottom split, all upright
+        // Top half = B, bottom half = F, no 180° rotation
         const top=r<halfR;
-        const isMiddleCol=best.cols%2===1 && c===halfC;
-        isFace=!top;  // bottom=Face, top=Back
-        if(isMiddleCol){
-          rot180=false;
-        } else {
-          const left=c<halfC;
-          rot180=!left;
-          if(!left) isFace=!isFace;
-        }
+        isFace=!top;
+        rot180=false;
       }
 
       const itemRotated=best.rotItems?(refW<=refH):refW>refH;
