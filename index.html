@@ -2434,6 +2434,7 @@ function fitSheetToLayout(){
 
 /* === SMART ORIENT (both-axis / single-axis flip) === */
 function smartOrientLayout(){
+  try{
   const s=S();
   if(!s.doubleSided || s.dblMode!=='different'){
     alert('Smart Orient requires Double-sided + Different mode.');return;
@@ -2678,6 +2679,14 @@ function smartOrientLayout(){
   el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
   el('dieSideOptions').style.display='none'; // No separate back side in smart orient
   el('layoutChoices').style.display='none';
+  // Keep smart orient button visible
+  el('smartOrientBtn').style.display='';
+  }catch(err){
+    console.error('[SmartOrient] Error:',err);
+    alert('Smart Orient error: '+err.message);
+    // Ensure button stays visible after error
+    const sb=el('smartOrientBtn'); if(sb) sb.style.display='';
+  }
 }
 
 function findBackSource(p){
