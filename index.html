@@ -3118,7 +3118,8 @@ async function exportPrintPDF(){
     for(const sh of sheets)for(const p of sh.placements){
       if(p._blank||p.fileId==null)continue;
       used.add(`${p.fileId}-${p.pageIndex}`);
-      if(!sh.smartOrient){const bk=findBackSource(p);if(bk&&!bk.common&&!bk.blank)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+      // Smart orient with back page: also collect back file refs
+      const bk=findBackSource(p);if(bk&&!bk.common&&!bk.blank)used.add(`${bk.fileId}-${bk.pageIndex}`);
     }
     for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
       if(f.type==='pdf'){
