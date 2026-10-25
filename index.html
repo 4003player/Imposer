@@ -1598,11 +1598,7 @@ function renderFileList(){
   el('filesSection').style.display='';el('layoutSection').style.display='';
   // Show Smart Orient button only in double-sided different mode
   const smartBtn=el('smartOrientBtn');
-  if(smartBtn){
-    const showSmart=S().doubleSided && S().dblMode==='different';
-    smartBtn.style.display=showSmart?'':'none';
-    if(!showSmart) console.log('[SmartOrient] button hidden — doubleSided='+S().doubleSided+' dblMode='+S().dblMode);
-  }
+  if(smartBtn) smartBtn.style.display=(S().doubleSided && S().dblMode==='different')?'':'none';
   const s=S(),isDbl=s.doubleSided,isDblDiff=isDbl&&s.dblMode==='different';
   let faceOpts=[];
   if(isDblDiff)for(const f of inputFiles)for(const p of f.pages)
@@ -1707,14 +1703,8 @@ function invalidateLayout(){
   el('previewBox').style.display='none';el('exportRow').style.display='none';
   el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
   el('layoutChoices').style.display='none';el('dieSideOptions').style.display='none';
-  // Refresh smart orient button visibility
-  const smartBtn=el('smartOrientBtn');
-  if(smartBtn){
-    const s=S();
-    const showSmart=s.doubleSided && s.dblMode==='different';
-    smartBtn.style.display=showSmart?'':'none';
-    if(!showSmart) console.log('[SmartOrient] button hidden in invalidateLayout — doubleSided='+s.doubleSided+' dblMode='+s.dblMode);
-  }
+  // Do NOT touch smartOrientBtn here — its visibility is managed only by
+  // onPrintModeChange / onDblModeChange / renderFileList
 }
 
 /* === QTY SCRUBBER === */
