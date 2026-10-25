@@ -2577,14 +2577,8 @@ function smartOrientLayout(){
   const usedCavities=pairsOnSheet*cavitiesPerPair;
   const emptyCavities=best.capacity-usedCavities;
 
-  // If there are empty cavities on the last sheet, alert user to adjust
+  // If there are empty cavities on the last sheet, just proceed (user will input even numbers)
   const totalPrintRuns=best.sheetsNeeded;
-  const lastSheetPairs=pairs.length - best.pairsPerSheet*(totalPrintRuns-1);
-  const lastSheetEmpty=best.capacity - lastSheetPairs*cavitiesPerPair;
-  if(lastSheetEmpty>0 && totalPrintRuns>0){
-    alert(`Smart Orient: ${best.cols}×${best.rows} grid fits ${best.pairsPerSheet} pair${best.pairsPerSheet>1?'s':''} per sheet.\n\nWith ${pairs.length} pair${pairs.length>1?'s':''} total, the last sheet has ${lastSheetEmpty} empty cavit${lastSheetEmpty===1?'y':'ies'}.\n\nAdjust quantities to fill the grid, or add extra files.`);
-    return;
-  }
 
   // Build the layout!
   // QUADRANT approach:
