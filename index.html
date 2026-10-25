@@ -2435,8 +2435,9 @@ function smartOrientLayout(){
   applyBleedOverride();
   const scaleFactor=s.scalePercent/100;
 
-  // Collect face/back pairs
-  const pairs=[];
+  // Collect unique face/back pairs with total quantity
+  // Each unique pair gets 2 cavities (1 face + 1 back). qty means print that many times.
+  const uniquePairs=[];
   for(const f of inputFiles)for(const p of f.pages){
     if(p.side!=='face')continue;
     // Find the back for this face
@@ -2449,27 +2450,27 @@ function smartOrientLayout(){
         if(backFile)break;
       }
     }
-    const qty=p.qty||1;
-    for(let q=0;q<qty;q++){
-      pairs.push({
-        faceFileId:f.id, facePageIndex:p.index,
-        backFileId:backFile?backFile.id:null, backPageIndex:backPage?backPage.index:null,
-        noBack:!!p.noBack || !backFile,
-        physW:p.physW*scaleFactor, physH:p.physH*scaleFactor,
-        trimW:p.trimW*scaleFactor, trimH:p.trimH*scaleFactor,
-        bleed:p.bleed*scaleFactor,
-        srcW:(p.srcW||p.physW)*scaleFactor, srcH:(p.srcH||p.physH)*scaleFactor,
-        srcBleed:(p.srcBleed!==undefined?p.srcBleed:p.bleed)*scaleFactor,
-        enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
-        scaleFactor:scaleFactor,
-        faceName:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?' p'+(p.index+1):''),
-        backName:backFile?(backFile.name.replace(/\.[^.]+$/,'')+(backFile.pages.length>1?' p'+(backPage.index+1):'')):'',
-      });
-    }
+    uniquePairs.push({
+      faceFileId:f.id, facePageIndex:p.index,
+      backFileId:backFile?backFile.id:null, backPageIndex:backPage?backPage.index:null,
+      noBack:!!p.noBack || !backFile,
+      physW:p.physW*scaleFactor, physH:p.physH*scaleFactor,
+      trimW:p.trimW*scaleFactor, trimH:p.trimH*scaleFactor,
+      bleed:p.bleed*scaleFactor,
+      srcW:(p.srcW||p.physW)*scaleFactor, srcH:(p.srcH||p.physH)*scaleFactor,
+      srcBleed:(p.srcBleed!==undefined?p.srcBleed:p.bleed)*scaleFactor,
+      enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
+      scaleFactor:scaleFactor,
+      faceName:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?' p'+(p.index+1):''),
+      backName:backFile?(backFile.name.replace(/\.[^.]+$/,'')+(backFile.pages.length>1?' p'+(backPage.index+1):'')):'',
+      qty:p.qty||1,
+    });
   }
+  // The pairs array is the unique set — qty is tracked per pair for printQty
+  const pairs=uniquePairs;
 
-  if(pairs.length<2){
-    alert('Smart Orient needs at least 2 face/back pairs.');return;
+  if(pairs.length<1){
+    alert('Smart Orient needs at least 1 face/back pair.');return;
   }
 
   // Check all same size (smart orient only works for uniform sizes)
@@ -2534,11 +2535,11 @@ function smartOrientLayout(){
     alert('No smart orient layout fits on the stock. Try a larger stock size.');return;
   }
 
-  // Sort: prefer both-axis over lr-only, then fewest extra cavities, then least waste
+  // Sort: prefer exact fit (0 extras) first, then both-axis over lr-only, then least waste
   candidates.sort((a,b)=>{
+    if(a.extraCavities!==b.extraCavities)return a.extraCavities-b.extraCavities;
     const ap=a.flipMode==='both'?0:1, bp=b.flipMode==='both'?0:1;
     if(ap!==bp)return ap-bp;
-    if(a.extraCavities!==b.extraCavities)return a.extraCavities-b.extraCavities;
     return a.waste-b.waste;
   });
 
@@ -2651,9 +2652,12 @@ function smartOrientLayout(){
   // Center placements in content area
   centerPlacements(placements,cW,cH);
 
+  // printQty = max qty across all pairs (they all print on same sheet)
+  const printQty=Math.max(...pairs.map(p=>p.qty));
+
   // Build sheets — smart orient is always single-sheet (both sides printed from one file)
-  sheets=[{placements:placements,printQty:1,smartOrient:true,flipMode:best.flipMode}];
-  sheetPrintQty=1;
+  sheets=[{placements:placements,printQty:printQty,smartOrient:true,flipMode:best.flipMode}];
+  sheetPrintQty=printQty;
   viewSheet=0;viewSide='face';
 
   // Update stock display
@@ -2661,9 +2665,9 @@ function smartOrientLayout(){
   drawPreview();
 
   const flipDesc=best.flipMode==='both'?'✅ Flip either axis':'⚠️ L/R flip only';
-  el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${best.capacity} cavities (${pairs.length} pairs) | ${flipDesc}`;
+  el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${best.capacity} cavities (${pairs.length} pair${pairs.length>1?'s':''}) | ${flipDesc}`;
   const cd=el('sheetCalc');cd.style.display='';
-  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${best.flipMode==='both'?'Both-axis flip ✅':'L/R flip only ⚠️'} · Print 1 time · Face+Back on same side`;
+  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${best.flipMode==='both'?'Both-axis flip ✅':'L/R flip only ⚠️'} · Print ${printQty} time${printQty>1?'s':''} · Face+Back on same side`;
 
   el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
   el('dieSideOptions').style.display='none'; // No separate back side in smart orient
