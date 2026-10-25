@@ -1,0 +1,4072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wide Format Imposer</title>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script src="https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+<script>
+// pdf.js for rendering PDF pages to canvas (press preview thumbnails)
+let pdfjsLib = null;
+import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs').then(mod => {
+  pdfjsLib = mod;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.mjs';
+}).catch(() => {});
+</script>
+<script>
+// Pre-load a real font file for PDF embedding (Caldera chokes on Type1 stub fonts)
+let slugFontBytes = null;
+fetch('https://cdn.jsdelivr.net/npm/@fontsource/roboto@5.0.8/files/roboto-latin-700-normal.woff')
+  .then(r => r.arrayBuffer()).then(ab => { slugFontBytes = new Uint8Array(ab); })
+  .catch(() => {}); // fallback to Helvetica if fetch fails
+</script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: #f5f5f7; color: #1d1d1f; line-height: 1.5;
+}
+.container { max-width: 760px; margin: 0 auto; padding: 36px 20px; }
+header { text-align: center; margin-bottom: 32px; }
+header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+header p { color: #86868b; font-size: 14px; margin-top: 6px; }
+
+.card {
+  background: #fff; border-radius: 14px; padding: 24px 28px;
+  margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.card h2 {
+  font-size: 12px; font-weight: 600; color: #86868b;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 14px; padding-bottom: 6px; border-bottom: 1px solid #f0f0f0;
+}
+
+.file-drop {
+  border: 2px dashed #d2d2d7; border-radius: 14px; padding: 40px 24px;
+  text-align: center; transition: all 0.2s; cursor: pointer; background: #fafafa;
+}
+.file-drop:hover, .file-drop.dragover { border-color: #0071e3; background: #f0f7ff; }
+.file-drop .icon { font-size: 40px; margin-bottom: 10px; }
+.file-drop p { font-size: 15px; color: #6e6e73; }
+.file-drop .sub { font-size: 12px; color: #aaa; margin-top: 6px; }
+.file-drop input { display: none; }
+
+.form-row { display: flex; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.form-group { flex: 1; display: flex; flex-direction: column; min-width: 100px; }
+.form-group label {
+  font-size: 11px; font-weight: 600; color: #86868b;
+  margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.form-group input, .form-group select {
+  padding: 9px 11px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 14px; font-family: inherit; background: #fafafa;
+}
+.form-group input:focus, .form-group select:focus {
+  outline: none; border-color: #0071e3;
+  box-shadow: 0 0 0 3px rgba(0,113,227,0.15); background: #fff;
+}
+
+.toggle-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.toggle-label { font-size: 13px; color: #1d1d1f; }
+
+.file-item {
+  padding: 8px 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  background: #f9f9f9; border-radius: 8px; margin-bottom: 4px; font-size: 13px;
+}
+.file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 100px; position: relative; }
+.file-item .name:hover { overflow: visible; z-index: 10; }
+.file-item .name:hover::after {
+  content: attr(title); position: absolute; left: 0; top: 100%;
+  background: #1d1d1f; color: #fff; padding: 4px 10px; border-radius: 6px;
+  font-size: 12px; white-space: nowrap; z-index: 100; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2); max-width: 600px; overflow-wrap: break-word; white-space: normal;
+}
+.file-item .info { color: #86868b; font-size: 11px; white-space: nowrap; }
+.file-item .drag-handle {
+  cursor: grab; margin-right: 4px; color: #bbb; font-size: 15px;
+  user-select: none; -webkit-user-select: none; line-height: 1;
+}
+.file-item .drag-handle:active { cursor: grabbing; }
+.file-item.drag-over { background: #e0f0ff; box-shadow: 0 0 0 2px #0071e3; }
+.file-item .remove {
+  background: none; border: none; color: #b91c1c; cursor: pointer;
+  font-size: 16px; font-weight: bold; padding: 0 4px;
+}
+.file-item .qty-input {
+  width: 52px; padding: 4px 6px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 12px; font-family: inherit; text-align: center; background: #fff;
+}
+.file-item .qty-input:focus { outline: none; border-color: #0071e3; box-shadow: 0 0 0 2px rgba(0,113,227,0.15); }
+.file-item select {
+  padding: 3px 6px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 11px; background: #fff; font-family: inherit;
+}
+.file-item .tag {
+  display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+.tag-face { background: #dbeafe; color: #1e40af; }
+.tag-back { background: #fde8e8; color: #991b1b; }
+.tag-detect { background: #d1fae5; color: #065f46; }
+.tag-white { background: #fef3c7; color: #92400e; }
+.tag-common { background: #e0e7ff; color: #3730a3; }
+.btn-opw {
+  padding: 2px 8px; border: 1px solid #f59e0b; border-radius: 4px;
+  font-size: 10px; font-weight: 600; background: #fffbeb; color: #92400e;
+  cursor: pointer; white-space: nowrap;
+}
+.btn-opw:hover { background: #fef3c7; }
+
+.white-drop {
+  border: 2px dashed #fbbf24; border-radius: 10px; padding: 20px;
+  text-align: center; cursor: pointer; background: #fffbeb; margin-top: 8px;
+}
+.white-drop:hover { border-color: #f59e0b; background: #fef3c7; }
+.white-drop p { font-size: 13px; color: #92400e; }
+.white-drop .sub { font-size: 11px; color: #b45309; }
+.white-drop input { display: none; }
+
+.preview-box {
+  background: #e8e8ed; border-radius: 14px; padding: 16px; text-align: center;
+  min-height: 120px; position: relative; margin-top: 12px;
+}
+.preview-box canvas { max-width: 100%; max-height: 420px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+.sheet-nav { position: absolute; top: 8px; right: 12px; font-size: 12px; color: #666; }
+.sheet-nav button {
+  background: #fff; border: 1px solid #d2d2d7; border-radius: 6px;
+  padding: 3px 10px; cursor: pointer; font-size: 11px; margin: 0 2px; font-weight: 500;
+}
+.sheet-nav button:hover { background: #f0f0f0; }
+
+.btn {
+  display: block; width: 100%; padding: 14px; border: none; border-radius: 12px;
+  font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: center;
+}
+.btn-primary { background: #0071e3; color: #fff; }
+.btn-primary:hover { background: #0077ed; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,113,227,0.3); }
+.btn:disabled { background: #d2d2d7; color: #999; cursor: not-allowed; transform: none; box-shadow: none; }
+
+.btn-row { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.btn-row .btn { flex: 1; min-width: 140px; }
+.btn-white { background: #f59e0b; color: #fff; }
+.btn-white:hover { background: #d97706; }
+.btn-cut { background: #34d399; color: #064e3b; }
+.btn-cut:hover { background: #10b981; }
+
+.status { font-size: 13px; color: #0071e3; margin: 10px 0; text-align: center; font-weight: 500; }
+.info-box {
+  background: #f0f7ff; border: 1px solid #bfdbfe; border-radius: 10px;
+  padding: 10px 14px; margin-top: 8px; font-size: 13px; color: #1e40af; line-height: 1.7;
+}
+.info-box b { color: #0071e3; }
+.note { font-size: 11px; color: #86868b; text-align: center; margin-top: 8px; }
+
+.layout-choice {
+  border: 2px solid #d2d2d7; border-radius: 10px; padding: 10px;
+  cursor: pointer; transition: all 0.2s; background: #fafafa; text-align: center;
+  min-width: 180px; flex: 1;
+}
+.layout-choice:hover { border-color: #0071e3; background: #f0f7ff; }
+.layout-choice.selected { border-color: #0071e3; background: #e8f4ff; box-shadow: 0 0 0 3px rgba(0,113,227,0.15); }
+.layout-choice canvas { max-width: 100%; border-radius: 6px; }
+.layout-choice .lc-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 4px; }
+.layout-choice .lc-info { font-size: 11px; color: #86868b; }
+.layout-choice .lc-best { display: inline-block; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; margin-top: 4px; }
+.tag-spot { background: #f3f4f6; color: #374151; }
+.spot-overlay {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.45); z-index: 1000; display: flex;
+  align-items: center; justify-content: center; backdrop-filter: blur(2px);
+}
+.spot-modal {
+  background: #fff; border-radius: 16px; padding: 28px 32px; max-width: 540px;
+  width: 92%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3); font-family: inherit;
+}
+.spot-modal h3 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+.spot-modal .spot-sub { font-size: 12px; color: #86868b; margin-bottom: 16px; }
+.spot-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0; flex-wrap: wrap;
+}
+.spot-swatch {
+  width: 22px; height: 22px; border-radius: 5px; border: 1px solid #ccc; flex-shrink: 0;
+}
+.spot-name { font-size: 14px; flex: 1; font-weight: 500; min-width: 120px; }
+.spot-role select {
+  padding: 4px 8px; border: 1px solid #d2d2d7; border-radius: 6px;
+  font-size: 12px; background: #fafafa; font-family: inherit;
+}
+.spot-gen-section {
+  margin-top: 16px; padding: 12px 14px; border-radius: 10px;
+  background: #f0f7ff; border: 1px solid #bfdbfe;
+}
+.spot-gen-section label { font-size: 13px; font-weight: 600; color: #1e40af; display: block; margin-bottom: 6px; }
+.spot-gen-section select, .spot-gen-section input {
+  padding: 7px 10px; border: 1px solid #d2d2d7; border-radius: 8px;
+  font-size: 13px; background: #fff; width: 100%; font-family: inherit;
+}
+.spot-btn-row { display: flex; gap: 10px; margin-top: 18px; }
+.spot-btn-row button {
+  flex: 1; padding: 11px; border: none; border-radius: 10px;
+  font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+}
+.spot-btn-apply { background: #0071e3; color: #fff; }
+.spot-btn-apply:hover { background: #0077ed; }
+.spot-btn-skip { background: #e5e5ea; color: #1d1d1f; }
+.spot-btn-skip:hover { background: #d1d1d6; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Wide Format Imposer</h1>
+    <p>Impose files for flat stock -- colors and resolution preserved</p>
+  </header>
+
+  <!-- STOCK SETUP -->
+  <div class="card">
+    <h2>Stock Setup</h2>
+    <div class="form-row">
+      <div class="form-group"><label>Width (in)</label><input type="number" id="stockW" value="96" min="1" step="0.5"></div>
+      <div class="form-group"><label>Height (in)</label><input type="number" id="stockH" value="48" min="1" step="0.5"></div>
+      <div class="form-group"><label>Gutter (in)</label><input type="number" id="gutter" value="0.5" min="0" step="0.0625"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Client Name</label><input type="text" id="jobName" placeholder="e.g. Konami"></div>
+      <div class="form-group"><label>Job Number</label><input type="text" id="jobNumber" placeholder="e.g. 271778"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Substrate</label><input type="text" id="stockName" placeholder="e.g. Coroplast 4mm"></div>
+      <div class="form-group"><label>Image DPI</label><input type="number" id="imageDPI" value="150" min="72"></div>
+      <div class="form-group"><label>Bleed (in)</label><input type="number" id="rasterBleed" value="0.25" min="0" step="0.0625"></div>
+      <div class="form-group"><label>Inset (in)</label><input type="number" id="insetVal" value="0" min="0" step="0.0625" title="Moves die inward from file edge"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Safe Area (in)</label><input type="number" id="safeArea" value="0" min="0" step="0.25" title="Margin around sheet edge — no art or bleed, marks OK"></div>
+      <div class="form-group"><label>Enlarge to Bleed</label>
+        <select id="enlargeBleed">
+          <option value="no">No</option>
+          <option value="yes">Yes — scale art to add bleed</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Scale %</label><input type="number" id="scalePercent" value="100" min="1" max="9999" step="1" title="Scale files — e.g. 65 for Konami cards, 200 for 2×"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Master Qty</label><input type="number" id="masterQty" value="1" min="1" max="200"></div>
+      <div class="form-group"><label>Master Orientation</label>
+        <select id="masterOrient">
+          <option value="auto">Auto (engine decides)</option>
+          <option value="portrait">Portrait</option>
+          <option value="landscape">Landscape</option>
+        </select>
+      </div>
+    </div>
+    <div class="toggle-row">
+      <label class="toggle-label"><input type="radio" name="printMode" value="single" checked onchange="onPrintModeChange()"> Single-sided</label>
+      <label class="toggle-label"><input type="radio" name="printMode" value="double" onchange="onPrintModeChange()"> Double-sided</label>
+      <span id="flipOptions" style="display:none;font-size:12px;color:#86868b">
+        Flip:
+        <label><input type="radio" name="flipAxis" value="horizontal" checked> Top/Bottom</label>
+        <label style="margin-left:6px"><input type="radio" name="flipAxis" value="vertical"> Left/Right</label>
+      </span>
+    </div>
+    <div id="dblSideMode" style="display:none" class="toggle-row">
+      <label class="toggle-label" style="font-size:12px">Mode:</label>
+      <select id="dblMode" onchange="onDblModeChange()" style="padding:5px 8px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa">
+        <option value="same">Same -- same art both sides</option>
+        <option value="different">Different -- assign face &amp; back</option>
+        <option value="common">Common back -- one file for all backs</option>
+      </select>
+    </div>
+    <!-- Common back drop zone -->
+    <div id="commonBackSection" style="display:none">
+      <div class="white-drop" id="commonBackDrop" style="border-color:#6366f1;background:#eef2ff">
+        <p id="commonBackLabel">Drop common back file here</p>
+        <p class="sub">.pdf .ai .jpg .png .tif</p>
+        <input type="file" id="commonBackInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff">
+      </div>
+    </div>
+  </div>
+
+  <!-- FILE DROP -->
+  <div class="file-drop" id="dropZone">
+    <div class="icon">📄</div>
+    <p>Drop face files here</p>
+    <p class="sub">Accepts .pdf .ai .jpg .png .tif .tiff</p>
+    <input type="file" id="fileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" multiple>
+  </div>
+
+  <!-- FILE LIST -->
+  <div id="filesSection" style="display:none">
+    <div class="card">
+      <h2>Files &amp; Quantities</h2>
+      <div id="fileList"></div>
+    </div>
+  </div>
+  <!-- Hidden OPW file picker -->
+  <input type="file" id="opwFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+  <input type="file" id="opwAllFileInput" accept=".pdf,.ai,.tif,.tiff,.jpg,.jpeg,.png" style="display:none">
+  <input type="file" id="backsAllFileInput" accept=".pdf,.ai,.jpg,.jpeg,.png,.tif,.tiff" style="display:none">
+
+  <!-- LAYOUT -->
+  <div id="layoutSection" style="display:none">
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <button class="btn btn-primary" id="arrangeBtn" style="flex:1">Arrange Layout</button>
+      <button class="btn" id="smartOrientBtn" style="flex:1;background:#059669;color:#fff;display:none" onclick="smartOrientLayout()">🔄 Smart Orient (Both-axis flip)</button>
+    </div>
+    <div id="layoutChoices" style="display:none;margin-top:12px">
+      <div class="card">
+        <h2>Choose Layout</h2>
+        <p style="font-size:12px;color:#86868b;margin-bottom:10px">Click a layout to use it</p>
+        <div id="choiceGrid" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+    <div class="preview-box" id="previewBox" style="display:none">
+      <div class="sheet-nav" id="sheetNav"></div>
+      <canvas id="preview"></canvas>
+    </div>
+    <div id="layoutInfo" class="status"></div>
+    <div id="sheetCalc" class="info-box" style="display:none"></div>
+    <div class="btn-row" id="exportRow" style="display:none">
+      <button class="btn btn-primary" id="printBtn">Download Print PDF</button>
+      <button class="btn btn-primary" id="printDieBtn" style="display:none;background:#6366f1">Download Print+Die PDF</button>
+      <label id="regDotsLabel" style="display:none;font-size:12px;color:#666;align-self:center;gap:4px;cursor:pointer;user-select:none"><input type="checkbox" id="regDotsChk" checked style="cursor:pointer"> Reg dots</label>
+      <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
+      <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
+      <button class="btn" id="fitSheetBtn" style="background:#6b7280;color:#fff" onclick="fitSheetToLayout()">Fit Sheet to Layout</button>
+      <button class="btn" id="pressPreviewBtn" style="background:#8b5cf6;color:#fff">⬇ Press Preview (8.5×14)</button>
+    </div>
+    <div id="markOptions" style="display:none;margin-top:8px;text-align:center;font-size:12px;color:#666">
+      <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeSlug" checked> Slug</label>
+      <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeHickeys" checked> Hickeys</label>
+    </div>
+    <div id="dieSideOptions" style="display:none;margin-top:6px;text-align:center;font-size:12px;color:#666">
+      <label style="margin-right:12px;user-select:none">Die lines on:
+        <select id="dieSideSel" style="padding:3px 6px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa;font-family:inherit">
+          <option value="face">Face</option>
+          <option value="back">Back</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
+      <label style="margin-right:12px;user-select:none">Reg dots on:
+        <select id="regDotsSideSel" style="padding:3px 6px;border:1px solid #d2d2d7;border-radius:6px;font-size:12px;background:#fafafa;font-family:inherit">
+          <option value="face">Face</option>
+          <option value="back">Back</option>
+          <option value="both">Both</option>
+        </select>
+      </label>
+    </div>
+    <p class="note">Colors, resolution, and spot channels are preserved -- no rasterization.</p>
+    <div style="text-align:center;margin-top:16px;"><button onclick="location.reload()" style="padding:12px 32px;border:none;border-radius:10px;background:#0071e3;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit;">Make Another</button></div>
+  </div>
+
+</div>
+
+<script>
+const PTS=72, REG_R=0.125*PTS, MARGIN=0.25, KAPPA=0.5522847498;
+const HICKEY_SIZE=0.7, HICKEY_DEPTH=0.36, HICKEY_OFFSET=2.0;
+
+let inputFiles=[], commonBackData=null;
+let fileIdSeq=0, sheets=[], viewSheet=0, viewSide='face', sheetPrintQty=1;
+let spotColorConfig = {
+  dieSpotNames: new Set(),
+  creaseSpotNames: new Set(),
+  generatedDieName: 'CutContour',
+  generatedDieCmyk: [0, 1, 0, 0],
+  configured: false
+};
+const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
+
+/* CMYK JPEG handling: detect 4-component JPEGs and convert to PNG via canvas.
+   Illustrator ignores /Decode on DCTDecode images, causing YCCK negatives.
+   Converting CMYK JPEGs to PNG at load time avoids the issue entirely. */
+function isCmykJpeg(bytes){
+  // Scan SOF markers for component count = 4
+  for(let i=0;i<bytes.length-9;i++){
+    if(bytes[i]!==0xFF) continue;
+    if(bytes[i+1]>=0xC0 && bytes[i+1]<=0xC2){
+      return bytes[i+9]===4; // 4 components = CMYK/YCCK
+    }
+  }
+  return false;
+}
+async function cmykJpegToPng(bytes){
+  // Decode via canvas (browser handles YCCK→RGB internally)
+  const blob=new Blob([bytes],{type:'image/jpeg'});
+  const url=URL.createObjectURL(blob);
+  const img=new Image();
+  await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});
+  URL.revokeObjectURL(url);
+  const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+  const ctx=c.getContext('2d');ctx.drawImage(img,0,0);
+  const pngBlob=await new Promise(r=>c.toBlob(r,'image/png'));
+  return new Uint8Array(await pngBlob.arrayBuffer());
+}
+
+function el(id){return document.getElementById(id);}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtNum(n){return parseFloat(n.toFixed(3)).toString();}
+/* Read a numeric input: falls back to the HTML default attribute, not a hardcoded value.
+   Fixes Safari bug where .value can return '' even when a number is displayed. */
+function numVal(id, fallback){
+  const e=el(id); const v=parseFloat(e.value);
+  if(!isNaN(v)) return v;
+  const dv=parseFloat(e.defaultValue);
+  return !isNaN(dv)?dv:(fallback||0);
+}
+
+function S(){
+  return {
+    stockW:numVal('stockW',96), stockH:numVal('stockH',48),
+    stockName:el('stockName').value.trim(), jobName:el('jobName').value.trim(),
+    jobNumber:el('jobNumber').value.trim(), gutter:numVal('gutter',0),
+    dpi:numVal('imageDPI',150), rasterBleed:numVal('rasterBleed',0), inset:numVal('insetVal',0), safeArea:numVal('safeArea',0), enlargeBleed:el('enlargeBleed').value==='yes',
+    scalePercent:numVal('scalePercent',100),
+    masterQty:parseInt(el('masterQty').value)||1, masterOrient:el('masterOrient').value, margin:Math.max(MARGIN,numVal('safeArea',0)),
+    doubleSided:document.querySelector('input[name=printMode]:checked').value==='double',
+    flipAxis:document.querySelector('input[name=flipAxis]:checked').value,
+    dblMode:el('dblMode').value,
+  };
+}
+
+function fileName(s){
+  const p=[];
+  if(s.jobNumber)p.push(s.jobNumber);if(s.jobName)p.push(s.jobName);if(s.stockName)p.push(s.stockName);
+  return p.join('_').replace(/[^a-zA-Z0-9_\- ]/g,'')||'imposed';
+}
+
+/* === TIFF DECODE === */
+function decodeTiff(buf){
+  const ifds=UTIF.decode(buf);
+  UTIF.decodeImage(buf,ifds[0]);
+  const ifd=ifds[0];
+  const w=ifd.width, h=ifd.height;
+  const rgba=UTIF.toRGBA8(ifd);
+  // Check if grayscale (all R=G=B for every pixel)
+  let isGray=true;
+  for(let i=0;i<rgba.length;i+=4){if(rgba[i]!==rgba[i+1]||rgba[i]!==rgba[i+2]){isGray=false;break;}}
+  // Convert to PNG bytes for embedding
+  const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+  const ctx=canvas.getContext('2d');
+  const imgData=ctx.createImageData(w,h);
+  imgData.data.set(rgba);
+  ctx.putImageData(imgData,0,0);
+  return new Promise(res=>{
+    canvas.toBlob(blob=>{
+      blob.arrayBuffer().then(ab=>{
+        res({pngBytes:new Uint8Array(ab),w,h,isGray,grayData:isGray?extractGray(rgba,w,h):null});
+      });
+    },'image/png');
+  });
+}
+
+function extractGray(rgba,w,h){
+  // Extract just the luminance channel for white plate
+  const gray=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++) gray[i]=rgba[i*4];
+  return gray;
+}
+
+/* === PRINT MODE === */
+function onPrintModeChange(){
+  const d=S().doubleSided;
+  el('flipOptions').style.display=d?'':'none';
+  el('dblSideMode').style.display=d?'':'none';
+  el('commonBackSection').style.display=(d&&S().dblMode==='common')?'':'none';
+  if(!d){for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;}}
+  invalidateLayout();renderFileList();
+}
+function onDblModeChange(){
+  const s=S();
+  el('commonBackSection').style.display=(s.doubleSided&&s.dblMode==='common')?'':'none';
+  for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;p.noBack=false;}
+  invalidateLayout();renderFileList();
+}
+
+/* === MASTER CONTROLS === */
+el('masterQty').addEventListener('change',()=>{
+  const mq=parseInt(el('masterQty').value)||1;
+  for(const f of inputFiles)for(const p of f.pages)if(!p.qtyOverride)p.qty=mq;
+  invalidateLayout();renderFileList();
+});
+el('masterOrient').addEventListener('change',()=>{
+  const mo=el('masterOrient').value;
+  for(const f of inputFiles)for(const p of f.pages)if(!p.orientOverride)p.orient=mo;
+  invalidateLayout();renderFileList();
+});
+el('rasterBleed').addEventListener('change',applyBleedOverride);
+el('rasterBleed').addEventListener('input',applyBleedOverride);
+el('enlargeBleed').addEventListener('change',applyBleedOverride);
+el('insetVal').addEventListener('change',()=>{invalidateLayout();});
+el('insetVal').addEventListener('input',()=>{invalidateLayout();});
+el('safeArea').addEventListener('change',()=>{invalidateLayout();});
+el('safeArea').addEventListener('input',()=>{invalidateLayout();});
+el('scalePercent').addEventListener('change',()=>{invalidateLayout();renderFileList();});
+el('scalePercent').addEventListener('input',()=>{invalidateLayout();renderFileList();});
+function applyBleedOverride(){
+  const bl=numVal('rasterBleed',0);
+  const enlarge=el('enlargeBleed').value==='yes';
+  for(const f of inputFiles){
+    for(const p of f.pages){
+      // Save original source dimensions on first override
+      if(p.srcW===undefined){p.srcW=p.physW;p.srcH=p.physH;p.srcBleed=p.bleed;}
+      if(f.type==='image'){
+        if(enlarge && bl > 0){
+          // Enlarge mode: art scaled up to create bleed, cut at original size
+          // physW/physH grow by 2*bl, trim stays at original srcW/srcH
+          p.bleed=bl;
+          p.trimW=p.srcW; p.trimH=p.srcH;
+          p.physW=p.srcW+2*bl; p.physH=p.srcH+2*bl;
+          p.enlargeBleed=true;
+        } else {
+          p.bleed=bl;p.trimW=Math.max(0.1,p.srcW-2*bl);p.trimH=Math.max(0.1,p.srcH-2*bl);
+          p.physW=p.srcW;p.physH=p.srcH;
+          p.enlargeBleed=false;
+        }
+      } else {
+        // PDF: only apply bleed if source has a TrimBox (hasTrim)
+        // PDFs without TrimBox have no bleed region to expand into
+        if(p.hasTrim){
+          p.bleed=bl;p.physW=p.trimW+2*bl;p.physH=p.trimH+2*bl;
+        } else if(enlarge && bl > 0){
+          // PDF without TrimBox: enlarge to add bleed
+          p.bleed=bl;
+          p.trimW=p.srcW; p.trimH=p.srcH;
+          p.physW=p.srcW+2*bl; p.physH=p.srcH+2*bl;
+          p.enlargeBleed=true;
+        } else {
+          // PDF without TrimBox, enlarge OFF — reset to original
+          p.bleed=0;
+          p.trimW=p.srcW; p.trimH=p.srcH;
+          p.physW=p.srcW; p.physH=p.srcH;
+          p.enlargeBleed=false;
+        }
+      }
+    }
+  }
+  invalidateLayout();renderFileList();
+}
+
+/* === COMMON BACK === */
+const cbDrop=el('commonBackDrop'),cbInput=el('commonBackInput');
+cbDrop.addEventListener('click',()=>cbInput.click());
+cbDrop.addEventListener('dragover',e=>{e.preventDefault();});
+cbDrop.addEventListener('drop',async e=>{e.preventDefault();await loadCommonBack(e.dataTransfer.files[0]);});
+cbInput.addEventListener('change',async()=>{if(cbInput.files[0])await loadCommonBack(cbInput.files[0]);cbInput.value='';});
+
+async function loadCommonBack(file){
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  let data;
+  if(ext==='pdf'||ext==='ai'){
+    const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+    const pg=doc.getPages()[0];const mb=pg.getMediaBox();
+    data={name:file.name,type:'pdf',bytes,physW:mb.width/PTS,physH:mb.height/PTS};
+  }else if(['tif','tiff'].includes(ext)){
+    const dec=await decodeTiff(bytes.buffer);
+    const s=S();data={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
+      physW:dec.w/s.dpi,physH:dec.h/s.dpi,imageW:dec.w,imageH:dec.h};
+  }else{
+    const blob=new Blob([bytes],{type:file.type});const url=URL.createObjectURL(blob);
+    const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
+    const s=S();const mt=file.type||'image/png';
+    data={name:file.name,type:'image',bytes,mimeType:mt,physW:img.naturalWidth/s.dpi,physH:img.naturalHeight/s.dpi,
+      imageW:img.naturalWidth,imageH:img.naturalHeight};
+  }
+  commonBackData=data;
+  el('commonBackLabel').textContent='Common back: '+file.name;
+  invalidateLayout();
+}
+
+/* === FILE DROP === */
+const dropZone=el('dropZone'),fileInput=el('fileInput');
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>{handleFiles(fileInput.files);fileInput.value='';});
+
+async function handleFiles(fl){
+  for(const file of fl){
+    const bytes=new Uint8Array(await file.arrayBuffer());
+    const ext=file.name.split('.').pop().toLowerCase();
+    try{
+      if(ext==='pdf'||ext==='ai') await parsePDF(bytes,file.name);
+      else if(['tif','tiff'].includes(ext)) await parseTiff(bytes,file.name);
+      else if(['jpg','jpeg','png'].includes(ext)) await parseRaster(bytes,file.name,file.type);
+    }catch(err){alert(`Could not read ${file.name}: ${err.message}`);}
+  }
+  // Apply bleed settings to all newly loaded files (raster and PDF alike)
+  applyBleedOverride();
+  // Collect all unique spot colors across all files/pages
+  const allSpots = new Map();
+  for(const f of inputFiles){
+    if(f.type !== 'pdf') continue;
+    for(const p of f.pages){
+      if(!p.spotColors) continue;
+      for(const sc of p.spotColors){
+        if(!allSpots.has(sc.spotName)){
+          allSpots.set(sc.spotName, {spotName: sc.spotName, cmyk: sc.cmyk, csNames: [sc.csName]});
+        } else {
+          const existing = allSpots.get(sc.spotName);
+          if(!existing.csNames.includes(sc.csName)) existing.csNames.push(sc.csName);
+        }
+      }
+    }
+  }
+  // Check if new spots appeared that haven't been configured
+  const currentSpotNames = new Set(allSpots.keys());
+  const allConfigured = spotColorConfig.configured && [...currentSpotNames].every(n =>
+    spotColorConfig.dieSpotNames.has(n) || spotColorConfig.creaseSpotNames.has(n) ||
+    (!KNOWN_DIE_NAMES.some(d => d.toLowerCase() === n.toLowerCase())));
+  if(allSpots.size > 0 && !allConfigured){
+    showSpotColorModal([...allSpots.values()], function(){
+      invalidateLayout(); renderFileList();
+    });
+  } else {
+    extractDiePathsForAllFilesAsync().then(()=>{
+      invalidateLayout(); renderFileList();
+    });
+  }
+}
+
+/* extractDiePathsForAllFilesAsync does the actual work — see below */
+
+async function extractDiePathsForAllFilesAsync(){
+  const dieNames = [...spotColorConfig.dieSpotNames, ...spotColorConfig.creaseSpotNames];
+  for(const f of inputFiles){
+    if(f.type !== 'pdf') continue;
+    for(const p of f.pages){
+      // Skip if diePaths already set (from parsePDF initial extraction)
+      if(p.diePaths) continue;
+      if(!p.spotColors || !p.spotColors.length) continue;
+      const matchingCSNames = p.spotColors
+        .filter(sc => dieNames.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+        .map(sc => sc.csName);
+      const allCSNames = [...new Set([...matchingCSNames, ...p.spotColors
+        .filter(sc => dieNames.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+        .map(sc => sc.spotName)])];
+      if(!allCSNames.length) continue;
+      // Mark as having die paths if die spots exist (even if we can't extract the paths,
+      // the embedded page XObject already contains them)
+      p.diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:p._pageW, pageH:p._pageH};
+    }
+  }
+}
+
+/* === SPOT COLOR MODAL === */
+function cmykToRgb(c,m,y,k){
+  return [Math.round(255*(1-c)*(1-k)), Math.round(255*(1-m)*(1-k)), Math.round(255*(1-y)*(1-k))];
+}
+
+function showSpotColorModal(allSpots, onConfirm){
+  const overlay = document.createElement('div');
+  overlay.className = 'spot-overlay';
+  const modal = document.createElement('div');
+  modal.className = 'spot-modal';
+
+  let html = '<h3>Spot Colors Detected</h3>';
+  html += '<p class="spot-sub">Classify each spot color channel found in your files</p>';
+
+  for(let i=0; i<allSpots.length; i++){
+    const sp = allSpots[i];
+    const rgb = cmykToRgb(sp.cmyk[0]||0, sp.cmyk[1]||0, sp.cmyk[2]||0, sp.cmyk[3]||0);
+    const isDie = KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase());
+    html += `<div class="spot-row">`;
+    html += `<div class="spot-swatch" style="background:rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></div>`;
+    html += `<span class="spot-name">${esc(sp.spotName)}</span>`;
+    html += `<span class="spot-role"><select data-spot-idx="${i}">`;
+    html += `<option value="print"${isDie?'':' selected'}>Print color (keep)</option>`;
+    html += `<option value="die"${isDie?' selected':''}>Die line</option>`;
+    html += `<option value="crease">Crease line</option>`;
+    html += `</select></span></div>`;
+  }
+
+  html += `<div class="spot-gen-section">`;
+  html += `<label>Name for imposer-generated dies:</label>`;
+  html += `<select id="spotGenNameSel"><option value="CutContour">CutContour</option><option value="__custom__">Custom...</option></select>`;
+  html += `<input id="spotGenNameInput" style="display:none;margin-top:6px" placeholder="Custom spot name">`;
+  html += `</div>`;
+
+  html += `<div class="spot-btn-row">`;
+  html += `<button class="spot-btn-skip" id="spotSkipBtn">Skip</button>`;
+  html += `<button class="spot-btn-apply" id="spotApplyBtn">Apply</button>`;
+  html += `</div>`;
+
+  modal.innerHTML = html;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Wire up the generated-name dropdown
+  const genSel = modal.querySelector('#spotGenNameSel');
+  const genInput = modal.querySelector('#spotGenNameInput');
+  const roleSelects = modal.querySelectorAll('[data-spot-idx]');
+
+  function updateGenOptions(){
+    const dieNames = [];
+    roleSelects.forEach(sel => {
+      if(sel.value === 'die') dieNames.push(allSpots[parseInt(sel.dataset.spotIdx)].spotName);
+    });
+    const currentVal = genSel.value;
+    genSel.innerHTML = '';
+    for(const dn of dieNames){
+      const opt = document.createElement('option');
+      opt.value = dn; opt.textContent = dn;
+      genSel.appendChild(opt);
+    }
+    if(!dieNames.length){
+      const opt = document.createElement('option');
+      opt.value = 'CutContour'; opt.textContent = 'CutContour';
+      genSel.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__'; customOpt.textContent = 'Custom...';
+    genSel.appendChild(customOpt);
+    // Restore selection if still valid
+    if([...genSel.options].some(o => o.value === currentVal)) genSel.value = currentVal;
+    else if(dieNames.length) genSel.value = dieNames[0];
+    genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
+  }
+
+  roleSelects.forEach(sel => sel.addEventListener('change', updateGenOptions));
+  genSel.addEventListener('change', () => {
+    genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
+  });
+  updateGenOptions();
+
+  function applyConfig(){
+    spotColorConfig.dieSpotNames = new Set();
+    spotColorConfig.creaseSpotNames = new Set();
+    roleSelects.forEach(sel => {
+      const sp = allSpots[parseInt(sel.dataset.spotIdx)];
+      if(sel.value === 'die') spotColorConfig.dieSpotNames.add(sp.spotName);
+      else if(sel.value === 'crease') spotColorConfig.creaseSpotNames.add(sp.spotName);
+    });
+    if(genSel.value === '__custom__' && genInput.value.trim()){
+      spotColorConfig.generatedDieName = genInput.value.trim();
+    } else if(genSel.value !== '__custom__'){
+      spotColorConfig.generatedDieName = genSel.value;
+    }
+    // Find CMYK for the generated die name from existing spots
+    const matchSpot = allSpots.find(s => s.spotName === spotColorConfig.generatedDieName);
+    if(matchSpot) spotColorConfig.generatedDieCmyk = matchSpot.cmyk;
+    spotColorConfig.configured = true;
+    overlay.remove();
+    extractDiePathsForAllFilesAsync().then(onConfirm);
+  }
+
+  function skipConfig(){
+    // Use defaults: auto-detect die names
+    spotColorConfig.dieSpotNames = new Set();
+    spotColorConfig.creaseSpotNames = new Set();
+    for(const sp of allSpots){
+      if(KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase())){
+        spotColorConfig.dieSpotNames.add(sp.spotName);
+      }
+    }
+    spotColorConfig.generatedDieName = 'CutContour';
+    spotColorConfig.generatedDieCmyk = [0, 1, 0, 0];
+    spotColorConfig.configured = true;
+    overlay.remove();
+    extractDiePathsForAllFilesAsync().then(onConfirm);
+  }
+
+  modal.querySelector('#spotApplyBtn').addEventListener('click', applyConfig);
+  modal.querySelector('#spotSkipBtn').addEventListener('click', skipConfig);
+}
+
+async function parsePDF(bytes,name){
+  // Scan raw bytes for spot colors BEFORE pdf-lib touches the buffer (it corrupts the ArrayBuffer)
+  const rawSpotMap = scanRawBytesForSpots(bytes);
+  // Copy bytes before pdf-lib's load() detaches the ArrayBuffer
+  const bytesCopy = new Uint8Array(bytes);
+  const s=S(),doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+  const pages=doc.getPages(),entry={id:++fileIdSeq,name,type:'pdf',bytes:bytesCopy,pages:[]};
+  for(let i=0;i<pages.length;i++){
+    const pg=pages[i],mb=pg.getMediaBox(),tb=pg.getTrimBox();
+    const hasTrim=Math.abs(tb.width-mb.width)>0.5||Math.abs(tb.height-mb.height)>0.5||Math.abs(tb.x-mb.x)>0.5||Math.abs(tb.y-mb.y)>0.5;
+    let physW,physH,trimW,trimH,bleed;
+    if(hasTrim){trimW=tb.width/PTS;trimH=tb.height/PTS;physW=mb.width/PTS;physH=mb.height/PTS;bleed=Math.max(0,Math.min((physW-trimW)/2,(physH-trimH)/2));}
+    else{physW=mb.width/PTS;physH=mb.height/PTS;trimW=physW;trimH=physH;bleed=0;}
+    const userBl=s.rasterBleed;
+    let srcW=physW, srcH=physH, srcBleed=bleed;
+    if(userBl>0&&hasTrim){bleed=userBl;physW=trimW+2*userBl;physH=trimH+2*userBl;}
+    // Extract all spot colors from the page
+    const spotColors = extractAllSpotColors(bytes, doc, i, rawSpotMap);
+    // Immediately extract die paths for known die names (modal can reclassify later)
+    const knownDieCS = spotColors
+      .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+      .map(sc => sc.csName);
+    // Also include spot names themselves to match content stream references
+    const allDieCS = [...new Set([...knownDieCS, ...spotColors
+      .filter(sc => KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sc.spotName.toLowerCase()))
+      .map(sc => sc.spotName)])];
+    let diePaths = allDieCS.length > 0 ? await extractPathsForCS(bytes, doc, i, mb.width, mb.height, allDieCS) : null;
+    // If extraction failed but we KNOW die spots exist in the file, mark as present
+    if(!diePaths && allDieCS.length > 0) diePaths = {paths:[{ops:[],width:0,_marker:true}], pageW:mb.width, pageH:mb.height};
+    entry.pages.push({index:i,hasTrim,physW,physH,trimW,trimH,bleed,diePaths,spotColors,
+      srcW,srcH,srcBleed,
+      qty:s.masterQty,qtyOverride:false,orient:s.masterOrient,orientOverride:false,
+      side:'face',backRef:null,
+      _pageW:mb.width,_pageH:mb.height});
+  }
+  inputFiles.push(entry);
+}
+
+/* === SPOT COLOR EXTRACTION === */
+/* Scan raw PDF bytes for CS→Separation mappings BEFORE pdf-lib corrupts the buffer */
+function scanRawBytesForSpots(pdfBytes){
+  const map = new Map(); // csName → {spotName, cmyk}
+  try{
+    const raw = new TextDecoder('latin1').decode(pdfBytes);
+    console.log('scanRawBytesForSpots: raw length=', raw.length);
+    const csRefs = [...raw.matchAll(/\/(CS\d+)\s+(\d+)\s+0\s+R/g)];
+    console.log('scanRawBytesForSpots: found', csRefs.length, 'CS refs');
+    for(const m of csRefs){
+      const csName=m[1], objNum=m[2];
+      const idx = raw.indexOf(objNum + ' 0 obj');
+      if(idx < 0) continue;
+      const chunk = raw.substring(idx, idx+500);
+      const sepMatch = chunk.match(/\/Separation\s*\/([^\s/\[\]<>]+)/i);
+      if(sepMatch){
+        const spotName = sepMatch[1];
+        let cmyk = [0,0,0,1];
+        const c1Match = chunk.match(/\/C1\s*\[\s*([\d.\s]+)\]/);
+        if(c1Match){
+          const vals = c1Match[1].trim().split(/\s+/).map(Number);
+          if(vals.length >= 4) cmyk = vals.slice(0,4);
+        }
+        map.set(csName, {spotName, cmyk});
+      }
+    }
+  }catch(e){ console.error('scanRawBytesForSpots error:', e); }
+  console.log('scanRawBytesForSpots result:', [...map.entries()].map(([k,v])=>k+'='+v.spotName));
+  return map;
+}
+
+function extractAllSpotColors(pdfBytes, doc, pageIdx, rawSpotMap){
+  function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
+  const pg = doc.getPages()[pageIdx];
+  const node = pg.node;
+  let resDict = resolve(node.get(PDFLib.PDFName.of('Resources')));
+  if(!resDict || !(resDict instanceof PDFLib.PDFDict)) return [];
+  let csDict = resolve(resDict.get(PDFLib.PDFName.of('ColorSpace')));
+  const spots = [];
+  // Strategy 1: structured pdf-lib API
+  if(csDict && csDict instanceof PDFLib.PDFDict){
+    try {
+      console.log('extractAllSpotColors Strategy 1: csDict has', [...csDict.entries()].length, 'entries');
+      for(const [key, val] of csDict.entries()){
+        let arr = resolve(val);
+        const keyStr = key instanceof PDFLib.PDFName ? key.decodeText() : key.toString();
+        console.log('  entry', keyStr, '-> type:', arr?.constructor?.name, 'isArray:', arr instanceof PDFLib.PDFArray, 'size:', arr instanceof PDFLib.PDFArray ? arr.size() : 'n/a');
+        if(arr instanceof PDFLib.PDFArray && arr.size() >= 2){
+          const type = arr.get(0);
+          const sepName = arr.get(1);
+          console.log('    [0]:', type?.constructor?.name, type instanceof PDFLib.PDFName ? type.decodeText() : String(type));
+          console.log('    [1]:', sepName?.constructor?.name, sepName instanceof PDFLib.PDFName ? sepName.decodeText() : String(sepName));
+          if(type instanceof PDFLib.PDFName && type.decodeText() === 'Separation' &&
+             sepName instanceof PDFLib.PDFName){
+            const nm = sepName.decodeText();
+            const csName = key instanceof PDFLib.PDFName ? key.decodeText() : key.toString();
+            // Try to extract CMYK from tint transform C1
+            let cmyk = [0,0,0,1];
+            if(arr.size() >= 4){
+              const fn = resolve(arr.get(3));
+              if(fn && fn instanceof PDFLib.PDFDict){
+                const c1 = fn.get(PDFLib.PDFName.of('C1'));
+                if(c1 && c1 instanceof PDFLib.PDFArray && c1.size() >= 4){
+                  cmyk = [];
+                  for(let ci=0;ci<4;ci++){
+                    const v = c1.get(ci);
+                    cmyk.push(v && typeof v.numberValue === 'function' ? v.numberValue() :
+                              v && typeof v.value === 'function' ? parseFloat(v.value()) :
+                              typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+                  }
+                }
+              }
+            }
+            spots.push({csName, spotName: nm, cmyk});
+          }
+        }
+      }
+    } catch(e){ /* ignore */ }
+  }
+  // Strategy 2: use pre-scanned raw bytes map (scanned before pdf-lib corrupted the buffer)
+  if(rawSpotMap){
+    for(const [csName, info] of rawSpotMap){
+      if(!spots.find(s=>s.csName===csName)){
+        spots.push({csName, spotName: info.spotName, cmyk: info.cmyk});
+      }
+    }
+  }
+  console.log('extractAllSpotColors final:', spots.map(s=>s.spotName+'/'+s.csName));
+  return spots;
+}
+
+/* Decompress a FlateDecode PDF stream using browser DecompressionStream */
+async function decompressPdfStream(compressed){
+  if(!compressed || !compressed.length) return null;
+  // Try 'deflate' (zlib format) first, then 'deflate-raw' (no zlib header)
+  for(const fmt of ['deflate', 'deflate-raw']){
+    try {
+      const ds = new DecompressionStream(fmt);
+      const writer = ds.writable.getWriter();
+      writer.write(compressed);
+      writer.close();
+      const reader = ds.readable.getReader();
+      const chunks = [];
+      let done = false;
+      while(!done){
+        const r = await reader.read();
+        if(r.done){done = true; break;}
+        chunks.push(r.value);
+      }
+      const totalLen = chunks.reduce((s,c)=>s+c.length, 0);
+      const decompressed = new Uint8Array(totalLen);
+      let off = 0;
+      for(const c of chunks){ decompressed.set(c, off); off += c.length; }
+      return new TextDecoder('latin1').decode(decompressed);
+    } catch(e) { /* try next format */ }
+  }
+  return null;
+}
+
+/* === DIE LINE EXTRACTION === */
+async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
+  if(!csNames || !csNames.length) return null;
+  function resolve(v){ return (v instanceof PDFLib.PDFRef) ? doc.context.lookup(v) : v; }
+  const pg = doc.getPages()[pageIdx];
+  const node = pg.node;
+
+  // csNames already contains the correct CS reference names (e.g. CS7) and spot names
+  // (e.g. CutContour) from the pre-scan. Use them directly for content stream matching.
+  const dieCSNames = [...csNames];
+  
+  // Now parse the content stream to extract paths drawn with those CS names
+  let contentStr = '';
+  try {
+    const contents = resolve(node.get(PDFLib.PDFName.of('Contents')));
+    if(!contents) return null;
+    let streams = [];
+    if(contents instanceof PDFLib.PDFArray){
+      for(let i=0;i<contents.size();i++){
+        const s = resolve(contents.get(i));
+        if(s) streams.push(s);
+      }
+    } else {
+      streams.push(contents);
+    }
+    const parts = [];
+    for(const s of streams){
+      // Check if this stream has a /Filter
+      let hasFilter = false;
+      try {
+        if(s.dict){
+          const filterVal = s.dict.get(PDFLib.PDFName.of('Filter'));
+          if(filterVal) hasFilter = true;
+        }
+      } catch(e) {}
+      
+      let bytes = null;
+      let text = null;
+      if(s.getUnencodedContents){
+        bytes = s.getUnencodedContents();
+        text = new TextDecoder('latin1').decode(bytes);
+      } else if(s.getContents){
+        bytes = s.getContents();
+        if(hasFilter){
+          text = await decompressPdfStream(bytes);
+        } else {
+          text = new TextDecoder('latin1').decode(bytes);
+        }
+      } else if(s.contents){
+        bytes = s.contents;
+        if(hasFilter){
+          text = await decompressPdfStream(bytes);
+        } else {
+          text = new TextDecoder('latin1').decode(bytes);
+        }
+      }
+      if(text) parts.push(text);
+    }
+    contentStr = parts.join('\n');
+  } catch(e){ console.error('extractPathsForCS: error getting content:', e); return null; }
+  
+  if(!contentStr) return null;
+  
+  // Parse: find sections where a die CS is active and extract path operators
+  // Pattern: /CSn CS 1 SCN ... path ops ... S or f or B (stroke/fill)
+  const paths = [];
+  const lines = contentStr.split(/[\r\n]+/);
+  let inDiePath = false;
+  let currentPath = [];
+  let lineWidth = 2.835; // default
+  let qDepth = 0; // track q/Q nesting inside die path section
+  
+  for(const line of lines){
+    const trimmed = line.trim();
+    
+    // Check for CS switch to die line
+    if(!inDiePath){
+      for(const csName of dieCSNames){
+        if(trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
+           trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')){
+          inDiePath = true;
+          currentPath = [];
+          qDepth = 0;
+          break;
+        }
+      }
+      if(!inDiePath) continue;
+    }
+    
+    // We're inside a die path section
+    if(inDiePath){
+      // Check for CS switch away from die line
+      if(trimmed.includes(' CS ') && !dieCSNames.some(n => trimmed.includes('/'+n))){
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+        inDiePath = false; currentPath = []; continue;
+      }
+      
+      // Track q/Q nesting — only exit on outermost Q (the one that was open before die mode)
+      // Detect both bare 'q' and 'q a b c d e f cm' (transform inside save)
+      if(trimmed === 'q'){
+        qDepth++;
+        continue;
+      }
+      const qcmMatch = trimmed.match(/^q\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(qcmMatch){
+        qDepth++;
+        currentPath.push({op:'cm', a:parseFloat(qcmMatch[1]),b:parseFloat(qcmMatch[2]),
+          c:parseFloat(qcmMatch[3]),d:parseFloat(qcmMatch[4]),
+          e:parseFloat(qcmMatch[5]),f:parseFloat(qcmMatch[6])});
+        continue;
+      }
+      if(trimmed === 'Q'){
+        qDepth--;
+        if(qDepth < 0){
+          // Outermost Q (the one from before die mode) — end of die path section
+          if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+          inDiePath = false; currentPath = []; qDepth = 0;
+          continue;
+        }
+        // Inner Q — just skip (transform context restored)
+        continue;
+      }
+      if(trimmed === 'EMC'){
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+        inDiePath = false; currentPath = []; qDepth = 0; continue;
+      }
+      
+      // Parse width
+      const wMatch = trimmed.match(/^([\d.]+)\s+w\s*$/);
+      if(wMatch) { lineWidth = parseFloat(wMatch[1]); continue; }
+      
+      // Parse path operators
+      // m = moveto, l = lineto, c = curveto (6 coords), v/y = shorthand curveto (2 coords each)
+      // h = closepath, re = rect, S = stroke, f = fill, B = both
+      const mMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+m\s*$/);
+      if(mMatch){ currentPath.push({op:'m', x:parseFloat(mMatch[1]), y:parseFloat(mMatch[2])}); continue; }
+      
+      const lMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+l\s*$/);
+      if(lMatch){ currentPath.push({op:'l', x:parseFloat(lMatch[1]), y:parseFloat(lMatch[2])}); continue; }
+      
+      const cMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+c\s*$/);
+      if(cMatch){ currentPath.push({op:'c', x1:parseFloat(cMatch[1]),y1:parseFloat(cMatch[2]),
+        x2:parseFloat(cMatch[3]),y2:parseFloat(cMatch[4]),
+        x3:parseFloat(cMatch[5]),y3:parseFloat(cMatch[6])}); continue; }
+      
+      // v = shorthand curveto: x2 y2 x3 y3 v → cp1=current, cp2=(x2,y2), end=(x3,y3)
+      const vMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+v\s*$/);
+      if(vMatch){ currentPath.push({op:'v', x2:parseFloat(vMatch[1]), y2:parseFloat(vMatch[2]),
+        x3:parseFloat(vMatch[3]), y3:parseFloat(vMatch[4])}); continue; }
+      
+      // y = shorthand curveto: x1 y1 x3 y3 y → cp1=(x1,y1), cp2=(x3,y3), end=(x3,y3)
+      const yMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+y\s*$/);
+      if(yMatch){ currentPath.push({op:'y', x1:parseFloat(yMatch[1]), y1:parseFloat(yMatch[2]),
+        x3:parseFloat(yMatch[3]), y3:parseFloat(yMatch[4])}); continue; }
+      
+      if(trimmed === 'h'){ currentPath.push({op:'h'}); continue; }
+      
+      const reMatch = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+re\s*$/);
+      if(reMatch){ currentPath.push({op:'re', x:parseFloat(reMatch[1]),y:parseFloat(reMatch[2]),
+        w:parseFloat(reMatch[3]),h:parseFloat(reMatch[4])}); continue; }
+      
+      if(trimmed === 'S' || trimmed === 'f' || trimmed === 'B'){
+        // Only strokes (S) are die paths — fills (f) are printed art on the die layer
+        if(currentPath.length > 0 && (trimmed === 'S' || trimmed === 'B')){
+          paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
+        }
+        currentPath = []; continue;
+      }
+      
+      // Handle bare cm (without q prefix)
+      const cmMatch2 = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(cmMatch2){
+        currentPath.push({op:'cm', a:parseFloat(cmMatch2[1]),b:parseFloat(cmMatch2[2]),
+          c:parseFloat(cmMatch2[3]),d:parseFloat(cmMatch2[4]),
+          e:parseFloat(cmMatch2[5]),f:parseFloat(cmMatch2[6])});
+      }
+    }
+  }
+  // Catch any remaining path
+  if(inDiePath && currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+  
+  // Filter out paths that are entirely outside the page bounds (pasteboard art)
+  // Illustrator draws die paths on the pasteboard outside the art board.
+  // The clip rect makes them invisible, but we extract them anyway.
+  // Filter by checking if the path's bounding box (after cm offset) overlaps the page.
+  const filtered = paths.filter(path => {
+    const cmOp = path.ops.find(op => op.op === 'cm');
+    if(!cmOp) return true; // No cm — keep it
+    
+    // Only handle identity cm (a=1,b=0,c=0,d=1) — just a translation
+    if(cmOp.a !== 1 || cmOp.b !== 0 || cmOp.c !== 0 || cmOp.d !== 1) return true;
+    
+    const cmE = cmOp.e, cmF = cmOp.f;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    
+    for(const op of path.ops){
+      let lx = 0, ly = 0;
+      if(op.op === 'm' || op.op === 'l'){ lx = op.x; ly = op.y; }
+      else if(op.op === 'c'){ lx = op.x3; ly = op.y3; }
+      else if(op.op === 'v'){ lx = op.x3; ly = op.y3; }
+      else if(op.op === 'y'){ lx = op.x3; ly = op.y3; }
+      else if(op.op === 're'){ lx = op.x + op.w; ly = op.y + op.h; }
+      else continue;
+      
+      const px = lx + cmE;
+      const py = ly + cmF;
+      minX = Math.min(minX, px);
+      maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py);
+      maxY = Math.max(maxY, py);
+    }
+    
+    // Also include the cm offset point itself
+    minX = Math.min(minX, cmE);
+    maxX = Math.max(maxX, cmE);
+    minY = Math.min(minY, cmF);
+    maxY = Math.max(maxY, cmF);
+    
+    // Check if bbox overlaps the page (with tolerance)
+    const tol = 1;
+    if(maxX < -tol || minX > pageW + tol || maxY < -tol || minY > pageH + tol){
+      return false; // Path is entirely outside the page — discard
+    }
+    return true;
+  });
+  
+  return filtered.length > 0 ? {paths: filtered, pageW, pageH} : null;
+}
+
+/* Compute the bounding box of all die paths in page coordinates (points) */
+function computeDieBBox(diePaths){
+  if(!diePaths || !diePaths.paths || !diePaths.paths.length) return null;
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  let curX=0, curY=0, cmTx=0, cmTy=0;
+  for(const path of diePaths.paths){
+    curX=0; curY=0; cmTx=0; cmTy=0;
+    for(const op of path.ops){
+      if(op.op==='cm'){ cmTx=op.e; cmTy=op.f; continue; }
+      if(op.op==='m'){ curX=op.x+cmTx; curY=op.y+cmTy; addPt(curX,curY); }
+      else if(op.op==='l'){ curX=op.x+cmTx; curY=op.y+cmTy; addPt(curX,curY); }
+      else if(op.op==='c'){ curX=op.x3+cmTx; curY=op.y3+cmTy; addPt(op.x1+cmTx,op.y1+cmTy); addPt(op.x2+cmTx,op.y2+cmTy); addPt(curX,curY); }
+      else if(op.op==='v'){ curX=op.x3+cmTx; curY=op.y3+cmTy; addPt(op.x2+cmTx,op.y2+cmTy); addPt(curX,curY); }
+      else if(op.op==='y'){ curX=op.x3+cmTx; curY=op.y3+cmTy; addPt(op.x1+cmTx,op.y1+cmTy); addPt(curX,curY); }
+      else if(op.op==='re'){ addPt(op.x+cmTx,op.y+cmTy); addPt(op.x+op.w+cmTx,op.y+op.h+cmTy); }
+      // h = closepath, no new points
+    }
+  }
+  function addPt(x,y){
+    if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y;
+  }
+  if(minX===Infinity) return null;
+  return {minX, minY, maxX, maxY, width:maxX-minX, height:maxY-minY};
+}
+
+async function parseTiff(bytes,name){
+  const dec=await decodeTiff(bytes.buffer);
+  const s=S();
+  // Try to read DPI from TIFF metadata
+  const ifds=UTIF.decode(bytes.buffer);
+  let fileDPI = null;
+  if(ifds[0]){
+    const xres=ifds[0].t282; // XResolution tag
+    if(xres && xres.length) fileDPI=xres[0];
+  }
+  const dpi=fileDPI||s.dpi;
+  const physW=dec.w/dpi,physH=dec.h/dpi,bl=s.rasterBleed;
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes:dec.pngBytes,mimeType:'image/png',
+    imageW:dec.w,imageH:dec.h,
+    pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
+      orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+/* === DPI DETECTION (from Proofmaker) === */
+function detectDpiFromBytes(uint8, filename) {
+  var dpi = null;
+  var lower = filename.toLowerCase();
+
+  // JPEG: try JFIF APP0, EXIF APP1, then Photoshop APP13 (8BIM ResolutionInfo)
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+    dpi = parseJfifDpi(uint8) || parseExifDpi(uint8) || parsePhotoshopDpi(uint8);
+  }
+  // PNG: look for pHYs chunk
+  else if (lower.endsWith('.png')) {
+    dpi = parsePngDpi(uint8);
+  }
+  // TIFF: IFD tags
+  else if (lower.endsWith('.tif') || lower.endsWith('.tiff')) {
+    var info = parseTiffIfdFull(uint8, 0);
+    if (info) dpi = info.dpi;
+  }
+  return dpi;
+}
+
+// Scan past JPEG fill bytes (0xFF padding) and marker-alignment junk.
+// Returns the index of the next valid 0xFF marker byte, or -1.
+function jpegNextMarker(d, start, limit) {
+  var i = start;
+  // Skip fill bytes (consecutive 0xFF)
+  while (i < limit && d[i] === 0xFF) i++;
+  // Back up one — we want to land ON the 0xFF that precedes the marker byte
+  if (i > start) i--;
+  // If we're not on 0xFF, scan forward to find one
+  while (i < limit && d[i] !== 0xFF) i++;
+  if (i >= limit) return -1;
+  // Skip any additional fill 0xFF bytes
+  while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+  return (i < limit - 1 && d[i] === 0xFF) ? i : -1;
+}
+
+function parseJfifDpi(d) {
+  // JFIF APP0: FF D8 FF E0 [len16] "JFIF\0" version densityUnit Xdensity Ydensity
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    // Stop at SOS (start of scan) — no more metadata after this
+    if (marker === 0xDA) break;
+    // Skip markers that have no length field (RST0-7, SOI, EOI, TEM)
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; } // invalid length — skip marker and retry
+    if (marker === 0xE0 && segLen >= 14) { // APP0 with enough room for JFIF
+      if (i + 13 < limit &&
+          d[i+4]===0x4A && d[i+5]===0x46 && d[i+6]===0x49 && d[i+7]===0x46 && d[i+8]===0x00) {
+        var unit = d[i + 11];
+        var xd = (d[i + 12] << 8) | d[i + 13];
+        if (unit === 1 && xd > 0) return xd; // dots per inch
+        if (unit === 2 && xd > 0) return Math.round(xd * 2.54); // dots per cm → dpi
+                // unit 0 = "aspect ratio only" but many JPEG encoders still store real DPI;
+                // if value looks like a typical print DPI (72–1200), use it as best-guess
+                if (unit === 0 && xd >= 72 && xd <= 1200) return xd;
+              }
+            }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parseExifDpi(d) {
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 65536);
+  var i = 2;
+  while (i >= 0 && i < limit - 18) {
+    i = jpegNextMarker(d, i, limit);
+    if (i < 0) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break;
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    if (i + 4 > limit) break;
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xE1) { // APP1 EXIF
+      if (i + 10 < limit &&
+          d[i+4]===0x45 && d[i+5]===0x78 && d[i+6]===0x69 && d[i+7]===0x66 &&
+          d[i+8]===0x00 && d[i+9]===0x00) {
+        var tiffStart = i + 10; // after marker(2)+len(2)+Exif\0\0(6)
+        var info = parseTiffIfdFull(d, tiffStart);
+        if (info && info.dpi) return info.dpi;
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePhotoshopDpi(d) {
+  // Photoshop APP13 (FFED): look for 8BIM resource 0x03ED (ResolutionInfo)
+  // Format: fixed-point 16.16 hRes, uint16 hResUnit (1=ppi, 2=ppcm), ...
+  if (d.length < 20 || d[0] !== 0xFF || d[1] !== 0xD8) return null;
+  var limit = Math.min(d.length, 1048576); // scan up to 1 MB (large ICC profiles push APP13 far out)
+  var i = 2;
+  while (i >= 0 && i < limit - 10) {
+    // Find next marker
+    if (d[i] !== 0xFF) { i++; continue; }
+    while (i < limit - 1 && d[i] === 0xFF && d[i + 1] === 0xFF) i++;
+    if (i >= limit - 4) break;
+    var marker = d[i + 1];
+    if (marker === 0xDA) break; // SOS
+    if (marker === 0x00 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD9)) { i += 2; continue; }
+    var segLen = (d[i + 2] << 8) | d[i + 3];
+    if (segLen < 2) { i += 2; continue; }
+    if (marker === 0xED) { // APP13
+      // Check for "Photoshop 3.0 " header
+      var segEnd = Math.min(i + 2 + segLen, limit);
+      var j = i + 4;
+      // Walk 8BIM resource blocks
+      while (j < segEnd - 12) {
+        if (d[j] === 0x38 && d[j+1] === 0x42 && d[j+2] === 0x49 && d[j+3] === 0x4D) { // "8BIM"
+          var resId = (d[j + 4] << 8) | d[j + 5];
+          // Skip pascal string (padded to even length)
+          var pLen = d[j + 6];
+          if (pLen % 2 === 0) pLen++;
+          var dataOff = j + 7 + pLen;
+          if (dataOff + 4 > segEnd) break;
+          var dataLen = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+          dataOff += 4;
+          if (resId === 0x03ED && dataLen >= 8 && dataOff + 8 <= segEnd) {
+            // ResolutionInfo: 4 bytes fixed-point 16.16 hRes, 2 bytes hResUnit
+            var hResFixed = ((d[dataOff] << 24) | (d[dataOff+1] << 16) | (d[dataOff+2] << 8) | d[dataOff+3]) >>> 0;
+            var hRes = hResFixed / 65536;
+            var hResUnit = (d[dataOff + 4] << 8) | d[dataOff + 5]; // 1=ppi, 2=ppcm
+            if (hRes > 0) {
+              return hResUnit === 2 ? Math.round(hRes * 2.54) : Math.round(hRes);
+            }
+          }
+          j = dataOff + dataLen;
+          if (dataLen % 2 !== 0) j++; // pad to even
+        } else {
+          j++;
+        }
+      }
+    }
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+function parsePngDpi(d) {
+  // PNG chunks: after 8-byte signature, each chunk is [len32][type4][data][crc32]
+  if (d.length < 20 || d[0]!==0x89 || d[1]!==0x50) return null;
+  var i = 8;
+  while (i < d.length - 12) {
+    var len = (d[i]<<24) | (d[i+1]<<16) | (d[i+2]<<8) | d[i+3];
+    if (len < 0 || len > d.length) break; // sanity
+    var type = String.fromCharCode(d[i+4], d[i+5], d[i+6], d[i+7]);
+    if (type === 'IDAT' || type === 'IEND') break; // past metadata
+    if (type === 'pHYs' && len === 9) {
+      var ppuX = (d[i+8]<<24) | (d[i+9]<<16) | (d[i+10]<<8) | d[i+11];
+      var unit = d[i+16];
+      if (unit === 1 && ppuX > 0) return Math.round(ppuX / 39.3701); // meters → inches
+      return null; // unit 0 = unknown
+    }
+    i += 12 + len;
+  }
+  return null;
+}
+
+// Combined TIFF IFD parser — returns { dpi, width, height } or null.
+// Works for both standalone TIFF files (base=0) and JPEG EXIF (base=APP1 offset).
+function parseTiffIfdFull(d, base) {
+  if (base + 8 > d.length) return null;
+  var le = (d[base]===0x49 && d[base+1]===0x49); // II = little-endian
+  var be = (d[base]===0x4D && d[base+1]===0x4D); // MM = big-endian
+  if (!le && !be) return null;
+
+  function u16(off) {
+    off += base;
+    if (off+2 > d.length) return 0;
+    return le ? (d[off] | (d[off+1]<<8)) : ((d[off]<<8) | d[off+1]);
+  }
+  function u32(off) {
+    off += base;
+    if (off+4 > d.length) return 0;
+    return le ? ((d[off] | (d[off+1]<<8) | (d[off+2]<<16) | (d[off+3]<<24)) >>> 0)
+              : (((d[off]<<24) | (d[off+1]<<16) | (d[off+2]<<8) | d[off+3]) >>> 0);
+  }
+
+  var magic = u16(2);
+  if (magic !== 42) return null; // not classic TIFF
+
+  var ifdOff = u32(4);
+  if (ifdOff === 0 || base + ifdOff + 2 > d.length) return null;
+  var nEntries = u16(ifdOff);
+  if (nEntries === 0 || nEntries > 500) return null; // sanity
+  var resUnit = 2; // default = inches
+  var xRes = null;
+  var imgWidth = null, imgHeight = null;
+
+  for (var e = 0; e < nEntries; e++) {
+    var entryOff = ifdOff + 2 + e * 12;
+    if (base + entryOff + 12 > d.length) break;
+    var tag = u16(entryOff);
+    var type = u16(entryOff + 2);
+    var count = u32(entryOff + 4);
+    var valOff = u32(entryOff + 8);
+
+    // ImageWidth (tag 0x0100)
+    if (tag === 0x0100) {
+      imgWidth = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ImageLength / height (tag 0x0101)
+    if (tag === 0x0101) {
+      imgHeight = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // ResolutionUnit (tag 0x0128)
+    if (tag === 0x0128) {
+      resUnit = (type === 3) ? u16(entryOff + 8) : valOff;
+    }
+    // XResolution (tag 0x011A) — RATIONAL, SHORT, or LONG
+    if (tag === 0x011A) {
+      if (type === 5) { // RATIONAL: num/den stored at valOff
+        if (base + valOff + 8 <= d.length) {
+          var num = u32(valOff);
+          var den = u32(valOff + 4);
+          if (den > 0) xRes = num / den;
+        }
+      } else if (type === 3) { // SHORT
+        xRes = u16(entryOff + 8);
+      } else if (type === 4) { // LONG
+        xRes = valOff;
+      }
+    }
+  }
+
+  var dpi = null;
+  if (xRes && xRes > 0) {
+    dpi = (resUnit === 3) ? Math.round(xRes * 2.54) : Math.round(xRes);
+  }
+  return { dpi: dpi, width: imgWidth, height: imgHeight };
+}
+
+async function parseRaster(bytes,name,mimeType){
+  const s=S();
+  const fileDPI=detectDpiFromBytes(bytes,name);
+  const dpi=fileDPI||s.dpi;
+  let embedBytes=bytes, embedMime=mimeType;
+  // CMYK JPEGs: convert to PNG to avoid YCCK /Decode issues (Illustrator negative)
+  const isJpg=mimeType==='image/jpeg'||mimeType==='image/jpg';
+  if(isJpg && isCmykJpeg(bytes)){
+    console.log('CMYK JPEG detected — converting to PNG for universal compatibility');
+    embedBytes=await cmykJpegToPng(bytes);
+    embedMime='image/png';
+  }
+  const blob=new Blob([embedBytes],{type:embedMime}),url=URL.createObjectURL(blob);
+  const img=new Image();await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=url;});URL.revokeObjectURL(url);
+  const physW=img.naturalWidth/dpi,physH=img.naturalHeight/dpi,bl=s.rasterBleed;
+  inputFiles.push({id:++fileIdSeq,name,type:'image',bytes:embedBytes,mimeType:embedMime,
+    imageW:img.naturalWidth,imageH:img.naturalHeight,
+    pages:[{index:0,physW,physH,trimW:Math.max(0.1,physW-2*bl),trimH:Math.max(0.1,physH-2*bl),
+      bleed:bl,qty:s.masterQty,qtyOverride:false,dpi,hasTrim:false,
+      orient:s.masterOrient,orientOverride:false,side:'face',backRef:null}]});
+}
+
+/* === OPW (Opaque White Plate) === */
+let opwTargetFileId=null, opwTargetPageIndex=null;
+const opwInput=el('opwFileInput');
+opwInput.addEventListener('change',async()=>{
+  if(!opwInput.files[0]||opwTargetFileId===null)return;
+  const file=opwInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const f=inputFiles.find(x=>x.id===opwTargetFileId);if(!f)return;
+  const p=f.pages.find(x=>x.index===opwTargetPageIndex);if(!p)return;
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      p.opw={name:file.name,type:'pdf',bytes,pageIndex:0};
+    }else if(['tif','tiff'].includes(ext)){
+      const dec=await decodeTiff(bytes.buffer);
+      p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
+    }else{
+      p.opw={name:file.name,type:'image',bytes,mimeType:file.type||'image/png'};
+    }
+  }catch(err){alert('Could not read OPW file: '+err.message);}
+  opwInput.value='';opwTargetFileId=null;opwTargetPageIndex=null;
+  renderFileList();
+});
+
+function pickOPW(fid,pidx){
+  opwTargetFileId=fid;opwTargetPageIndex=pidx;
+  opwInput.click();
+}
+function removeOPW(fid,pidx){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  const p=f.pages.find(x=>x.index===pidx);if(!p)return;
+  p.opw=null;renderFileList();
+}
+
+/* === BULK OPW (all pages) === */
+let opwAllTargetFileId=null;
+const opwAllInput=el('opwAllFileInput');
+opwAllInput.addEventListener('change',async()=>{
+  if(!opwAllInput.files[0]||opwAllTargetFileId===null)return;
+  const file=opwAllInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const f=inputFiles.find(x=>x.id===opwAllTargetFileId);if(!f){opwAllInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      const doc=await PDFLib.PDFDocument.load(bytes,{ignoreEncryption:true});
+      const pgCount=doc.getPageCount();
+      for(let i=0;i<f.pages.length;i++){
+        const opwIdx=Math.min(i,pgCount-1);
+        f.pages[i].opw={name:file.name+(pgCount>1?' p'+(opwIdx+1):''),type:'pdf',bytes,pageIndex:opwIdx};
+      }
+    }else if(['tif','tiff'].includes(ext)){
+      const dec=await decodeTiff(bytes.buffer);
+      for(const p of f.pages) p.opw={name:file.name,type:'image',bytes:dec.pngBytes,mimeType:'image/png'};
+    }else{
+      for(const p of f.pages) p.opw={name:file.name,type:'image',bytes,mimeType:file.type||'image/png'};
+    }
+  }catch(err){alert('Could not read OPW file: '+err.message);}
+  opwAllInput.value='';opwAllTargetFileId=null;
+  renderFileList();
+});
+function pickOPWAll(fid){
+  opwAllTargetFileId=fid;
+  opwAllInput.click();
+}
+function removeOPWAll(fid){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  for(const p of f.pages) p.opw=null;
+  renderFileList();
+}
+
+/* === BULK BACKS (all pages) === */
+let backsAllTargetFileId=null;
+const backsAllInput=el('backsAllFileInput');
+backsAllInput.addEventListener('change',async()=>{
+  if(!backsAllInput.files[0]||backsAllTargetFileId===null)return;
+  const file=backsAllInput.files[0];
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const ext=file.name.split('.').pop().toLowerCase();
+  const faceFile=inputFiles.find(x=>x.id===backsAllTargetFileId);if(!faceFile){backsAllInput.value='';return;}
+  try{
+    if(ext==='pdf'||ext==='ai'){
+      await parsePDF(bytes,file.name);
+    }else if(['tif','tiff'].includes(ext)){
+      await parseTiff(bytes,file.name);
+    }else if(['jpg','jpeg','png'].includes(ext)){
+      await parseRaster(bytes,file.name,file.type);
+    }
+    // The newly added file is the last in inputFiles
+    const backFile=inputFiles[inputFiles.length-1];
+    // Set all its pages as backs, pair 1-to-1
+    const s=S();
+    for(let i=0;i<backFile.pages.length&&i<faceFile.pages.length;i++){
+      backFile.pages[i].side='back';
+      backFile.pages[i].backRef={fileId:faceFile.id,pageIndex:faceFile.pages[i].index};
+    }
+    // Also ensure double-sided different mode is active
+    if(!s.doubleSided){
+      document.querySelector('input[name=printMode][value=double]').checked=true;
+      onPrintModeChange();
+    }
+    if(el('dblMode').value!=='different'){
+      el('dblMode').value='different';
+      onDblModeChange();
+    }
+    // Re-set backs after mode change (onDblModeChange resets sides)
+    for(let i=0;i<backFile.pages.length&&i<faceFile.pages.length;i++){
+      backFile.pages[i].side='back';
+      backFile.pages[i].backRef={fileId:faceFile.id,pageIndex:faceFile.pages[i].index};
+    }
+  }catch(err){alert('Could not read Backs file: '+err.message);}
+  backsAllInput.value='';backsAllTargetFileId=null;
+  invalidateLayout();renderFileList();
+});
+function pickBacksAll(fid){
+  backsAllTargetFileId=fid;
+  backsAllInput.click();
+}
+
+/* === FILE LIST === */
+function renderFileList(){
+  if(!inputFiles.length){el('filesSection').style.display='none';el('layoutSection').style.display='none';return;}
+  el('filesSection').style.display='';el('layoutSection').style.display='';
+  // Show Smart Orient button only in double-sided different mode
+  const smartBtn=el('smartOrientBtn');
+  if(smartBtn) smartBtn.style.display=(S().doubleSided && (S().dblMode==='different' || S().dblMode==='same'))?'':'none';
+  const s=S(),isDbl=s.doubleSided,isDblDiff=isDbl&&s.dblMode==='different';
+  let faceOpts=[];
+  if(isDblDiff)for(const f of inputFiles)for(const p of f.pages)
+    if(p.side==='face')faceOpts.push({fileId:f.id,pageIndex:p.index,label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')});
+
+  let qtyIdx=100;
+  const flatRows=[];for(const f of inputFiles)for(const p of f.pages)flatRows.push({fileId:f.id,pageIndex:p.index});
+  let html='';
+  let lastFileId=null;
+  for(let ri=0;ri<flatRows.length;ri++){
+    const row=flatRows[ri],f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
+    const p=f.pages.find(x=>x.index===row.pageIndex);if(!p)continue;
+    // File-level header for multi-page files
+    if(f.pages.length>1&&f.id!==lastFileId){
+      lastFileId=f.id;
+      const allHaveOpw=f.pages.every(pg=>pg.opw);
+      html+=`<div style="padding:6px 12px;background:#eef2ff;border-radius:8px 8px 0 0;margin-top:8px;margin-bottom:0;font-size:12px;font-weight:600;color:#3730a3;display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
+      html+=`<span>📄 ${esc(f.name)} (${f.pages.length} pages)</span>`;
+      if(allHaveOpw){
+        html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPWAll(${f.id})" style="border-color:#b91c1c;color:#b91c1c;background:#fef2f2">✕ OPW all</button>`;
+      }else{
+        html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPWAll(${f.id})">+ OPW all pages</button>`;
+      }
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickBacksAll(${f.id})" style="border-color:#6366f1;color:#3730a3;background:#eef2ff">+ Backs all pages</button>`;
+      html+=`</div>`;
+    }else if(f.pages.length<=1){lastFileId=f.id;}
+    const pgL=f.pages.length>1?` p${p.index+1}`:'';
+    const isBack=isDblDiff&&p.side==='back';
+    html+=`<div class="file-item" draggable="true" data-ri="${ri}" ondragstart="onDragStart(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">`;
+    html+=`<span class="drag-handle">&#9776;</span>`;
+    html+=`<span class="name" title="${esc(f.name)}${pgL}">${esc(f.name)}${pgL}</span>`;
+    html+=`<span class="info">${p.physW.toFixed(1)}" x ${p.physH.toFixed(1)}"</span>`;
+    const sc=numVal('scalePercent',100);
+    if(sc!==100) html+=` <span class="info" style="color:#0071e3">→ ${(p.physW*sc/100).toFixed(1)}" x ${(p.physH*sc/100).toFixed(1)}" @ ${sc}%</span>`;
+    if(f.type==='image'&&p.dpi) html+=` <span class="info">${p.dpi} DPI</span>`;
+    if(p.hasTrim)html+=` <span class="tag tag-detect">Bleed ${fmtNum(p.bleed)}"</span>`;
+    else if(f.type==='image'&&p.bleed>0)html+=` <span class="info">Bleed ${fmtNum(p.bleed)}"</span>`;
+    html+=` <span class="info">Trim ${p.trimW.toFixed(1)}" x ${p.trimH.toFixed(1)}"</span>`;
+    if(p.diePaths) html+=` <span class="tag tag-detect">Die detected</span>`;
+    // Spot color tags
+    if(p.spotColors && p.spotColors.length){
+      for(const sc of p.spotColors){
+        const isDie = spotColorConfig.dieSpotNames.has(sc.spotName);
+        const isCrease = spotColorConfig.creaseSpotNames.has(sc.spotName);
+        if(isDie) html+=` <span class="tag tag-detect">${esc(sc.spotName)}</span>`;
+        else if(isCrease) html+=` <span class="tag tag-detect" style="background:#fef3c7;color:#92400e">${esc(sc.spotName)}</span>`;
+        else html+=` <span class="tag tag-spot">${esc(sc.spotName)}</span>`;
+      }
+    }
+    // OPW white plate
+    if(p.opw){
+      html+=` <span class="tag tag-white">OPW: ${esc(p.opw.name.substring(0,18))}</span>`;
+      html+=` <button class="btn-opw" tabindex="-1" onclick="removeOPW(${f.id},${p.index})">x</button>`;
+    } else {
+      html+=` <button class="btn-opw" tabindex="-1" onclick="pickOPW(${f.id},${p.index})">+ OPW</button>`;
+    }
+    // Orientation
+    html+=` <select onchange="updatePage(${f.id},${p.index},'orient',this.value)">`;
+    html+=`<option value="auto" ${p.orient==='auto'?'selected':''}>Auto</option>`;
+    html+=`<option value="portrait" ${p.orient==='portrait'?'selected':''}>Port</option>`;
+    html+=`<option value="landscape" ${p.orient==='landscape'?'selected':''}>Land</option></select>`;
+    if(isDblDiff){
+      html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'side',this.value)">`;
+      html+=`<option value="face" ${p.side==='face'?'selected':''}>Face</option><option value="back" ${p.side==='back'?'selected':''}>Back</option></select>`;
+      if(p.side==='back'){
+        html+=` <select tabindex="-1" onchange="updatePage(${f.id},${p.index},'backRef',this.value)"><option value="">--pair--</option>`;
+        for(const fo of faceOpts){const v=`${fo.fileId}-${fo.pageIndex}`;
+          html+=`<option value="${v}" ${p.backRef&&!p.backRef.blank&&p.backRef.fileId===fo.fileId&&p.backRef.pageIndex===fo.pageIndex?'selected':''}>${esc(fo.label)}</option>`;}
+        html+=`</select> <span class="tag tag-back">BACK</span>`;
+      }else{
+        html+=` <span class="tag tag-face">FACE</span>`;
+        html+=` <label style="font-size:10px;color:#86868b;margin-left:6px;cursor:pointer;user-select:none"><input type="checkbox" ${p.noBack?'checked':''} onchange="updatePage(${f.id},${p.index},'noBack',this.checked?1:0)" style="cursor:pointer"> No Back</label>`;
+      }
+    }
+    if(isDbl&&s.dblMode==='common')html+=` <span class="tag tag-common">+common back</span>`;
+    if(!isBack)html+=` <input type="number" class="qty-input" value="${p.qty}" min="0" max="200" tabindex="${qtyIdx++}" placeholder="qty" onchange="updatePage(${f.id},${p.index},'qty',this.value)">`;
+    else if(isDblDiff&&p.backRef){const pf=inputFiles.find(x=>x.id===p.backRef.fileId);if(pf){const pp=pf.pages.find(x=>x.index===p.backRef.pageIndex);if(pp)html+=` <span class="info">qty: ${pp.qty} (follows face)</span>`;}}
+    html+=` <button class="remove" tabindex="-1" onclick="removeFile(${f.id},${p.index})">&times;</button></div>`;
+  }
+  el('fileList').innerHTML=html;
+}
+
+function updatePage(fid,pidx,field,val){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  const p=f.pages.find(x=>x.index===pidx);if(!p)return;
+  if(field==='qty'){p.qty=Math.max(0,parseInt(val)||0);p.qtyOverride=true;}
+  else if(field==='orient'){p.orient=val;p.orientOverride=(val!==S().masterOrient);}
+  else if(field==='side'){p.side=val;if(val==='face')p.backRef=null;}
+  else if(field==='backRef'){if(val==='blank'){p.backRef={blank:true};}else if(val){const[a,b]=val.split('-').map(Number);p.backRef={fileId:a,pageIndex:b};}else p.backRef=null;}
+  else if(field==='noBack'){p.noBack=!!val;}
+  invalidateLayout();renderFileList();
+}
+function removeFile(fid,pidx){
+  const f=inputFiles.find(x=>x.id===fid);if(!f)return;
+  if(f.pages.length<=1){for(const ff of inputFiles)for(const pp of ff.pages)if(pp.backRef&&pp.backRef.fileId===fid)pp.backRef=null;inputFiles=inputFiles.filter(x=>x.id!==fid);}
+  else f.pages=f.pages.filter(x=>x.index!==pidx);
+  invalidateLayout();renderFileList();
+}
+function invalidateLayout(){
+  sheets=[];viewSheet=0;viewSide='face';sheetPrintQty=1;
+  _thumbCache.clear();
+  el('previewBox').style.display='none';el('exportRow').style.display='none';
+  el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
+  el('layoutChoices').style.display='none';el('dieSideOptions').style.display='none';
+  // Do NOT touch smartOrientBtn here — its visibility is managed only by
+  // onPrintModeChange / onDblModeChange / renderFileList
+}
+
+/* === QTY SCRUBBER === */
+// Prevent row drag when interacting with qty inputs; add drag-to-scrub
+(function(){
+  let scrubEl=null, scrubStartY=0, scrubStartVal=0, scrubDirty=false;
+  document.addEventListener('mousedown',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(!inp)return;
+    // Block the parent row's drag
+    e.stopPropagation();
+    inp.closest('[draggable]')?.setAttribute('draggable','false');
+    scrubEl=inp; scrubStartY=e.clientY; scrubStartVal=parseInt(inp.value)||0; scrubDirty=false;
+    inp.style.cursor='ns-resize';
+    document.addEventListener('mousemove',onScrubMove);
+    document.addEventListener('mouseup',onScrubUp);
+  });
+  function onScrubMove(e){
+    if(!scrubEl)return;
+    const dy=scrubStartY-e.clientY; // up = positive
+    const step=Math.round(dy/8);
+    if(Math.abs(dy)>3) scrubDirty=true;
+    if(!scrubDirty)return;
+    const nv=Math.max(0,Math.min(200,scrubStartVal+step));
+    scrubEl.value=nv;
+    scrubEl.dispatchEvent(new Event('change'));
+  }
+  function onScrubUp(e){
+    document.removeEventListener('mousemove',onScrubMove);
+    document.removeEventListener('mouseup',onScrubUp);
+    if(!scrubEl)return;
+    scrubEl.style.cursor='';
+    scrubEl.closest('.file-item')?.setAttribute('draggable','true');
+    if(!scrubDirty){
+      // Was a plain click — focus the input for typing
+      scrubEl.focus();
+    }
+    scrubEl=null;
+  }
+  // Double-click selects all text
+  document.addEventListener('dblclick',function(e){
+    const inp=e.target.closest('.qty-input');
+    if(inp){ inp.focus(); inp.select(); }
+  });
+})();
+
+/* === DRAG SORT === */
+let dragSrcRi=null;
+function buildFlatIndex(){const r=[];for(const f of inputFiles)for(const p of f.pages)r.push({fileId:f.id,pageIndex:p.index});return r;}
+function onDragStart(e){dragSrcRi=parseInt(e.currentTarget.dataset.ri);e.dataTransfer.effectAllowed='move';e.currentTarget.style.opacity='0.4';}
+function onDragOver(e){e.preventDefault();e.dataTransfer.dropEffect='move';e.currentTarget.classList.add('drag-over');}
+function onDragLeave(e){e.currentTarget.classList.remove('drag-over');}
+function onDrop(e){
+  e.preventDefault();e.currentTarget.classList.remove('drag-over');
+  const dest=parseInt(e.currentTarget.dataset.ri);if(dragSrcRi===null||dragSrcRi===dest)return;
+  const flat=buildFlatIndex(),src=flat[dragSrcRi];flat.splice(dragSrcRi,1);flat.splice(dest,0,src);
+  const nf=[],seen=new Set();
+  for(const row of flat){const f=inputFiles.find(x=>x.id===row.fileId);if(!f)continue;
+    if(!seen.has(f.id)){seen.add(f.id);const pages=flat.filter(r=>r.fileId===f.id).map(r=>f.pages.find(p=>p.index===r.pageIndex)).filter(Boolean);nf.push({...f,pages});}}
+  inputFiles=nf;dragSrcRi=null;invalidateLayout();renderFileList();
+}
+
+/* === ORIENTATION === */
+function resolveOrientation(p,sW,sH,forceRotated){
+  let orient=p.orient||'auto';const pw=p.physW,ph=p.physH;
+  if(forceRotated!==undefined) return forceRotated?{w:ph,h:pw,rotated:true}:{w:pw,h:ph,rotated:false};
+  if(orient==='portrait')return ph>=pw?{w:pw,h:ph,rotated:false}:{w:ph,h:pw,rotated:true};
+  if(orient==='landscape')return pw>=ph?{w:pw,h:ph,rotated:false}:{w:ph,h:pw,rotated:true};
+  // orient==='auto' — caller will try both and pick best
+  return{w:pw,h:ph,rotated:false};
+}
+
+/* === PIECES === */
+function collectPieces(forceRotated){
+  const s=S(),isDblDiff=s.doubleSided&&s.dblMode==='different',items=[];
+  const scaleFactor=s.scalePercent/100;
+  for(const f of inputFiles)for(const p of f.pages){
+    if(isDblDiff&&p.side==='back')continue;
+    const isAuto = !p.orient || p.orient==='auto';
+    // Apply scale to physical and trim dimensions
+    const sPhysW=p.physW*scaleFactor, sPhysH=p.physH*scaleFactor;
+    const sTrimW=p.trimW*scaleFactor, sTrimH=p.trimH*scaleFactor;
+    const sBleed=p.bleed*scaleFactor;
+    const sSrcW=(p.srcW||p.physW)*scaleFactor, sSrcH=(p.srcH||p.physH)*scaleFactor;
+    const sSrcBleed=(p.srcBleed!==undefined?p.srcBleed:p.bleed)*scaleFactor;
+    // Build a scaled page proxy for orientation
+    const sp={physW:sPhysW,physH:sPhysH,orient:p.orient};
+    const ori=resolveOrientation(sp,s.stockW,s.stockH, isAuto ? forceRotated : undefined);
+    const trimW=ori.rotated?sTrimH:sTrimW,trimH=ori.rotated?sTrimW:sTrimH;
+    for(let q=0;q<p.qty;q++)items.push({
+      fileId:f.id,pageIndex:p.index,type:f.type,w:ori.w,h:ori.h,trimW,trimH,bleed:sBleed,rotated:ori.rotated,
+      canFlip:isAuto, physW:sPhysW, physH:sPhysH, trimWOrig:sTrimW, trimHOrig:sTrimH,
+      srcW:sSrcW, srcH:sSrcH, srcBleed:sSrcBleed,
+      enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
+      scaleFactor:scaleFactor,
+      label:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?` p${p.index+1}`:'')+(p.qty>1?` #${q+1}`:''),
+    });
+  }
+  return items;
+}
+
+/* === PACKING === */
+/* Flip an item to its alternate orientation */
+function flipItem(it){
+  return {...it, w:it.h, h:it.w, trimW:it.trimH, trimH:it.trimW, rotated:!it.rotated};
+}
+/* Simple shelf packer — uses TRIM dims for spacing, physW/physH for the placed item */
+function shelfPack(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>b.trimH-a.trimH||b.trimW-a.trimW);
+  const placed=[],unplaced=[];let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    if(it.trimW>bW+.001||it.trimH>bH+.001){unplaced.push(it);continue;}
+    if(cX+it.trimW>bW+.001){cX=0;cY+=rH+gut;rH=0;}
+    if(cY+it.trimH>bH+.001){unplaced.push(it);continue;}
+    // Place so trim is at (cX,cY); bleed extends outward by p.bleed
+    placed.push({...it,x:cX-it.bleed,y:cY-it.bleed});
+    cX+=it.trimW+gut;rH=Math.max(rH,it.trimH);
+  }
+  return{placed,unplaced};
+}
+/* Mixed-orientation shelf packer: tries both orientations per shelf row */
+function mixedShelfPack(items,bW,bH,gut){
+  const sizeKey=it=>{const a=Math.min(it.trimW,it.trimH),b=Math.max(it.trimW,it.trimH);return `${a.toFixed(4)}x${b.toFixed(4)}`;};
+  const hasFlippable=items.some(it=>it.canFlip&&Math.abs(it.trimW-it.trimH)>.01);
+  if(!hasFlippable) return shelfPack(items,bW,bH,gut);
+
+  const groups=new Map();
+  for(const it of items){
+    const k=sizeKey(it);
+    if(!groups.has(k))groups.set(k,{items:[],sample:it});
+    groups.get(k).items.push(it);
+  }
+  // If all items are same size and flippable → analytic mixed-row approach
+  if(groups.size===1){
+    const g=[...groups.values()][0], sample=g.sample, count=g.items.length;
+    const tA=Math.min(sample.trimW,sample.trimH), tB=Math.max(sample.trimW,sample.trimH);
+    const bl=sample.bleed;
+    // Portrait = tA wide × tB tall; Landscape = tB wide × tA tall (trim dims)
+    let bestPlaced=[], bestScore=0;
+    const maxPRows=Math.floor((bH+gut)/(tB+gut));
+    const maxLRows=Math.floor((bH+gut)/(tA+gut));
+    for(let pRows=0;pRows<=maxPRows;pRows++){
+      const usedH=pRows>0?pRows*tB+(pRows-1)*gut:0;
+      const remH=bH-usedH-(pRows>0?gut:0);
+      const lRows=remH>=tA?Math.floor((remH+gut)/(tA+gut)):0;
+      const pCols=Math.floor((bW+gut)/(tA+gut));
+      const lCols=Math.floor((bW+gut)/(tB+gut));
+      const total=pRows*pCols+lRows*lCols;
+      if(total>bestScore){
+        bestScore=total;
+        const pl=[];let idx=0;
+        for(let r=0;r<pRows&&idx<count;r++){
+          const ty=r*(tB+gut);
+          for(let c=0;c<pCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW<=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tA+gut)-bl, y:ty-bl});
+          }
+        }
+        const lStartY=pRows>0?pRows*(tB+gut):0;
+        for(let r=0;r<lRows&&idx<count;r++){
+          const ty=lStartY+r*(tA+gut);
+          for(let c=0;c<lCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW>=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tB+gut)-bl, y:ty-bl});
+          }
+        }
+        bestPlaced=pl;
+      }
+    }
+    // Also try landscape rows first (top) then portrait rows (bottom)
+    for(let lRows=0;lRows<=maxLRows;lRows++){
+      const usedH=lRows>0?lRows*tA+(lRows-1)*gut:0;
+      const remH=bH-usedH-(lRows>0?gut:0);
+      const pRows=remH>=tB?Math.floor((remH+gut)/(tB+gut)):0;
+      const pCols=Math.floor((bW+gut)/(tA+gut));
+      const lCols=Math.floor((bW+gut)/(tB+gut));
+      const total=pRows*pCols+lRows*lCols;
+      if(total>bestScore){
+        bestScore=total;
+        const pl=[];let idx=0;
+        for(let r=0;r<lRows&&idx<count;r++){
+          const ty=r*(tA+gut);
+          for(let c=0;c<lCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW>=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tB+gut)-bl, y:ty-bl});
+          }
+        }
+        const pStartY=lRows>0?lRows*(tA+gut):0;
+        for(let r=0;r<pRows&&idx<count;r++){
+          const ty=pStartY+r*(tB+gut);
+          for(let c=0;c<pCols&&idx<count;c++){
+            const it=g.items[idx++];
+            const oriented=it.trimW<=it.trimH?{...it}:flipItem(it);
+            pl.push({...oriented,
+              x:c*(tA+gut)-bl, y:ty-bl});
+          }
+        }
+        bestPlaced=pl;
+      }
+    }
+    if(bestPlaced.length>0){
+      const unplaced=g.items.slice(bestPlaced.length);
+      return{placed:bestPlaced,unplaced};
+    }
+  }
+  // Fallback for mixed-size items: per-item rotation shelf packer
+  const sorted=[...items].sort((a,b)=>{
+    const aMax=Math.max(a.trimW,a.trimH),bMax=Math.max(b.trimW,b.trimH);return bMax-aMax||Math.min(b.trimW,b.trimH)-Math.min(a.trimW,a.trimH);
+  });
+  const placed=[],unplaced=[];let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    const alt=it.canFlip?flipItem(it):null;
+    let use=it,fits=false;
+    if(use.trimW<=bW+.001&&use.trimH<=bH+.001){
+      if(cX+use.trimW<=bW+.001&&cY+use.trimH<=bH+.001)fits=true;
+      else if(cY+use.trimH<=bH+.001){cX=0;cY+=rH+gut;rH=0;if(cY+use.trimH<=bH+.001)fits=true;}
+    }
+    if(!fits&&alt&&alt.trimW<=bW+.001&&alt.trimH<=bH+.001){
+      use=alt;fits=false;
+      if(cX+use.trimW<=bW+.001&&cY+use.trimH<=bH+.001)fits=true;
+      else{cX=0;cY+=rH+gut;rH=0;if(cX+use.trimW<=bW+.001&&cY+use.trimH<=bH+.001)fits=true;}
+    }
+    if(!fits){unplaced.push(it);continue;}
+    placed.push({...use,x:cX-use.bleed,y:cY-use.bleed});
+    cX+=use.trimW+gut;rH=Math.max(rH,use.trimH);
+  }
+  return{placed,unplaced};
+}
+function packSheet(items,bW,bH,gut){
+  return mixedShelfPack(items,bW,bH,gut);
+}
+
+/* === ZONE SPLIT PACKER === */
+function packShelfSimple(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>b.h-a.h||b.w-a.w);
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    if(it.w>bW+.001||it.h>bH+.001){unplaced.push(it);continue;}
+    if(cX+it.w>bW+.001){cX=0;cY+=rH+gut;rH=0;}
+    if(cY+it.h>bH+.001){unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw:it.w,ph:it.h});
+    cX+=it.w+gut;rH=Math.max(rH,it.h);
+  }
+  return{placed,unplaced};
+}
+
+function packShelfRotate(items,bW,bH,gut){
+  const sorted=[...items].sort((a,b)=>Math.max(b.w,b.h)-Math.max(a.w,a.h));
+  const placed=[],unplaced=[];
+  let cX=0,cY=0,rH=0;
+  for(const it of sorted){
+    const fitsR=(w,h)=>(cX+w<=bW+.001)&&(cY+h<=bH+.001);
+    const fitsNR=(w,h)=>(w<=bW+.001)&&(cY+rH+gut+h<=bH+.001);
+    let pw,ph,rot=false;
+    if(fitsR(it.w,it.h)){pw=it.w;ph=it.h;}
+    else if(fitsR(it.h,it.w)){pw=it.h;ph=it.w;rot=true;}
+    else if(fitsNR(it.w,it.h)){cX=0;cY+=rH+gut;rH=0;pw=it.w;ph=it.h;}
+    else if(fitsNR(it.h,it.w)){cX=0;cY+=rH+gut;rH=0;pw=it.h;ph=it.w;rot=true;}
+    else{unplaced.push(it);continue;}
+    placed.push({...it,x:cX,y:cY,pw,ph,rotated:rot});
+    cX+=pw+gut;rH=Math.max(rH,ph);
+  }
+  return{placed,unplaced};
+}
+
+function packZoneSplit(items,binW,binH,gut){
+  // Group by unique size
+  const groups=new Map();
+  for(const it of items){
+    const key=Math.min(it.w,it.h).toFixed(2)+'_'+Math.max(it.w,it.h).toFixed(2);
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(it);
+  }
+  const groupList=[...groups.values()];
+  if(groupList.length<2) return null;
+
+  let bestResult=null,bestCount=0,bestWaste=Infinity;
+  const perms=groupList.length<=5?permute(groupList):[groupList];
+
+  for(const perm of perms){
+    for(const[bW,bH]of[[binW,binH],[binH,binW]]){
+      const result=tryZoneOrder(perm,bW,bH,gut);
+      const waste=calcWaste(result.placed,bW,bH);
+      if(result.placed.length>bestCount||(result.placed.length===bestCount&&waste<bestWaste)){
+        bestCount=result.placed.length;bestWaste=waste;
+        bestResult={placed:result.placed,unplaced:result.unplaced,stockW:bW,stockH:bH};
+      }
+    }
+  }
+  return bestResult;
+}
+
+function tryZoneOrder(groups,binW,binH,gut){
+  let usedH=0;
+  const allPlaced=[],allUnplaced=[];
+  for(const group of groups){
+    const remainH=binH-usedH;
+    if(remainH<=0){allUnplaced.push(...group);continue;}
+    let bestPack=null,bestN=0;
+    for(const rotate of[false,true]){
+      const oriented=group.map(it=>rotate?{...it,w:it.h,h:it.w,pw:it.h,ph:it.w,rotated:true}:{...it,pw:it.w,ph:it.h,rotated:false});
+      const pack=packShelfSimple(oriented,binW,remainH,gut);
+      if(pack.placed.length>bestN){bestN=pack.placed.length;bestPack=pack;}
+    }
+    if(bestPack&&bestPack.placed.length>0){
+      let maxUsed=0;
+      for(const p of bestPack.placed){p.y+=usedH;maxUsed=Math.max(maxUsed,(p.y-usedH)+p.ph);}
+      allPlaced.push(...bestPack.placed);
+      allUnplaced.push(...bestPack.unplaced);
+      usedH+=maxUsed+gut;
+    } else allUnplaced.push(...group);
+  }
+  return{placed:allPlaced,unplaced:allUnplaced};
+}
+
+function calcWaste(placed,bW,bH){
+  let a=0;for(const p of placed)a+=(p.pw||p.w)*(p.ph||p.h);
+  return 1-a/(bW*bH);
+}
+
+function permute(arr){
+  if(arr.length<=1)return[arr];
+  const r=[];
+  for(let i=0;i<arr.length;i++){
+    const rest=[...arr.slice(0,i),...arr.slice(i+1)];
+    for(const p of permute(rest))r.push([arr[i],...p]);
+  }
+  return r;
+}
+
+function centerPlacements(pl,bW,bH){
+  if(!pl.length)return;
+  // Compute extent using trim positions (p.x+bleed is trim left, p.x+bleed+trimW is trim right)
+  let mX=0,mY=0;
+  for(const p of pl){mX=Math.max(mX,p.x+p.bleed+p.trimW);mY=Math.max(mY,p.y+p.bleed+p.trimH);}
+  const ox=(bW-mX)/2,oy=(mY<bH*0.5)?0:(bH-mY)/2;
+  for(const p of pl){p.x+=ox;p.y+=oy;}
+}
+
+function arrangeLayout(){
+  const s=S(),cW=s.stockW-2*s.margin,cH=s.stockH-2*s.margin;
+  applyBleedOverride();
+
+  // Collect pieces in both orientations
+  const itemsNormal=collectPieces(false);
+  const itemsRotated=collectPieces(true);
+  const hasAuto=inputFiles.some(f=>f.pages.some(p=>!p.orient||p.orient==='auto'));
+
+  if(!itemsNormal.length){el('layoutInfo').textContent='No pieces.';return;}
+
+  // Run multiple strategies, collect results
+  const candidates=[];
+
+  function tryStrategy(name,items,bW,bH){
+    const result=packSheet(items,bW,bH,s.gutter);
+    if(result.placed.length>0){
+      const pl=[...result.placed];
+      centerPlacements(pl,bW,bH);
+      const waste=calcWaste(pl,bW,bH);
+      candidates.push({name,placed:pl,unplaced:result.unplaced,stockW:bW+2*s.margin,stockH:bH+2*s.margin,contentW:bW,contentH:bH,waste,count:pl.length});
+    }
+  }
+
+  // Shelf packer — both orientations
+  tryStrategy('Shelf',itemsNormal,cW,cH);
+  tryStrategy('Shelf (stock flipped)',itemsNormal,cH,cW);
+  if(hasAuto){
+    tryStrategy('Shelf (rotated)',itemsRotated,cW,cH);
+    tryStrategy('Shelf (rotated + flipped)',itemsRotated,cH,cW);
+  }
+
+  // Zone split
+  const zr=packZoneSplit(itemsNormal,cW,cH,s.gutter);
+  if(zr&&zr.placed.length>0){
+    const pl=[...zr.placed];
+    const zbW=zr.stockW,zbH=zr.stockH;
+    centerPlacements(pl,zbW,zbH);
+    candidates.push({name:'Zone Split',placed:pl,unplaced:zr.unplaced,stockW:zbW+2*s.margin,stockH:zbH+2*s.margin,contentW:zbW,contentH:zbH,waste:calcWaste(pl,zbW,zbH),count:pl.length});
+  }
+
+  if(!candidates.length){el('layoutInfo').textContent='No pieces fit on stock.';return;}
+
+  // Sort by fewest unplaced first, then most per sheet, then least waste
+  candidates.sort((a,b)=>(a.unplaced.length-b.unplaced.length)||b.count-a.count||(a.waste-b.waste));
+  const seen=new Set();
+  const unique=[];
+  for(const c of candidates){
+    const sig=c.placed.map(p=>Math.round(p.x*10)+','+Math.round(p.y*10)+','+Math.round((p.pw||p.w)*10)+','+Math.round((p.ph||p.h)*10)).sort().join('|');
+    if(!seen.has(sig)){seen.add(sig);unique.push(c);}
+  }
+
+  // Show top 4 as clickable choices
+  const top=unique.slice(0,4);
+  const choiceGrid=el('choiceGrid');
+  choiceGrid.innerHTML='';
+  el('layoutChoices').style.display='';
+
+  // Store candidates globally for selection
+  window._layoutCandidates=top;
+
+  top.forEach((cand,i)=>{
+    const div=document.createElement('div');
+    div.className='layout-choice'+(i===0?' selected':'');
+    div.onclick=()=>selectLayout(i);
+
+    const title=document.createElement('div');
+    title.className='lc-title';
+    title.textContent=cand.name;
+    div.appendChild(title);
+
+    // Draw thumbnail
+    const canvas=document.createElement('canvas');
+    drawChoiceThumb(canvas,cand);
+    div.appendChild(canvas);
+
+    const info=document.createElement('div');
+    info.className='lc-info';
+    const pct=((1-cand.waste)*100).toFixed(1);
+    const unp=cand.unplaced?cand.unplaced.length:0;
+    const totalItems=cand.count+unp;
+    const sheetsNeeded=unp>0?Math.ceil(totalItems/cand.count):1;
+    let infoText=`${cand.count} up · ${pct}% util · ${cand.stockW.toFixed(0)}"×${cand.stockH.toFixed(0)}"`;
+    if(sheetsNeeded>1) infoText+=` · ${sheetsNeeded} sheets`;
+    if(unp>0) infoText+=` · ${unp} overflow`;
+    info.textContent=infoText;
+    div.appendChild(info);
+
+    if(i===0){
+      const best=document.createElement('div');
+      best.className='lc-best';best.textContent='★ BEST';
+      div.appendChild(best);
+    }
+
+    choiceGrid.appendChild(div);
+  });
+
+  // Auto-select the best one
+  selectLayout(0);
+}
+
+function drawChoiceThumb(canvas,cand){
+  const sW=cand.stockW,sH=cand.stockH,m=MARGIN;
+  const maxW=200,maxH=150;
+  const scale=Math.min(maxW/sW,maxH/sH);
+  canvas.width=Math.ceil(sW*scale);canvas.height=Math.ceil(sH*scale);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d2d2d7';ctx.strokeRect(0,0,canvas.width-1,canvas.height-1);
+
+  const colors=['#dbeafe','#fef3c7','#d1fae5','#fde8e8','#e0e7ff','#fce7f3'];
+  const sizeKeys=new Map();let ci=0;
+  for(const p of cand.placed){
+    const key=Math.min(p.w,p.h).toFixed(1)+'_'+Math.max(p.w,p.h).toFixed(1);
+    if(!sizeKeys.has(key))sizeKeys.set(key,colors[ci++%colors.length]);
+  }
+  for(const p of cand.placed){
+    const pw=p.pw||p.w,ph=p.ph||p.h;
+    const x=(m+p.x)*scale,y=(m+p.y)*scale,w=pw*scale,h=ph*scale;
+    const key=Math.min(p.w,p.h).toFixed(1)+'_'+Math.max(p.w,p.h).toFixed(1);
+    ctx.fillStyle=sizeKeys.get(key)||'#ddd';
+    ctx.fillRect(x,y,w,h);
+    ctx.strokeStyle='#0071e3';ctx.lineWidth=0.5;
+    ctx.strokeRect(x,y,w,h);
+  }
+}
+
+/* === SHEET DEDUP === */
+function sheetSignature(sh){
+  // Signature: sorted list of fileId-pageIndex at rounded positions
+  return sh.placements.map(p=>
+    `${p.fileId}-${p.pageIndex}@${Math.round(p.x*100)},${Math.round(p.y*100)},${p.rotated?'R':'N'}`
+  ).sort().join('|');
+}
+function deduplicateSheets(){
+  if(sheets.length<=1)return;
+  const merged=[];
+  for(const sh of sheets){
+    const sig=sheetSignature(sh);
+    const existing=merged.find(m=>m._sig===sig);
+    if(existing){existing.printQty=(existing.printQty||1)+1;}
+    else{sh._sig=sig;merged.push(sh);}
+  }
+  // Clean up temp sig
+  for(const m of merged)delete m._sig;
+  sheets=merged;
+}
+
+function selectLayout(idx){
+  const cand=window._layoutCandidates[idx];
+  if(!cand)return;
+
+  // Highlight selected card
+  const cards=el('choiceGrid').querySelectorAll('.layout-choice');
+  cards.forEach((c,i)=>c.className='layout-choice'+(i===idx?' selected':''));
+
+  const s=S();
+  // Update stock dims to match chosen layout
+  s.stockW=cand.stockW;s.stockH=cand.stockH;
+  el('stockW').value=cand.stockW;el('stockH').value=cand.stockH;
+
+  // Build sheets — pack overflow onto additional sheets
+  const totalNeeded=cand.placed.length + (cand.unplaced?cand.unplaced.length:0);
+  const perSheet=cand.count;
+  const contentW=cand.contentW, contentH=cand.contentH;
+
+  sheets=[{placements:cand.placed,printQty:1}];
+  let unplacedPool=cand.unplaced?[...cand.unplaced]:[];
+  while(unplacedPool.length>0){
+    const result=packSheet(unplacedPool,contentW,contentH,s.gutter);
+    if(result.placed.length===0)break; // nothing fits, avoid infinite loop
+    const pl=[...result.placed];
+    centerPlacements(pl,contentW,contentH);
+    sheets.push({placements:pl,printQty:1});
+    unplacedPool=result.unplaced;
+  }
+  // Deduplicate identical sheets: if two sheets have the same files at same positions, merge printQty
+  deduplicateSheets();
+  sheetPrintQty=1;
+
+  viewSheet=0;viewSide='face';drawPreview();
+
+  const totalPlaced=sheets.reduce((sum,sh)=>sum+sh.placements.length*(sh.printQty||1),0);
+  const hasDedup=sheets.some(sh=>(sh.printQty||1)>1);
+  el('layoutInfo').textContent=`${perSheet} up per sheet · ${sheets.length} sheet${sheets.length>1?'s':''}`+(hasDedup?' (deduped)':'')+(s.doubleSided?' | Double-sided':'');
+  const cd=el('sheetCalc');cd.style.display='';
+  if(sheets.length===1){
+    const pq=sheets[0].printQty||1;
+    cd.innerHTML=`<b>${perSheet}</b> per sheet × <b>Print ${pq} time${pq>1?'s':''}</b> = <b>${totalPlaced}</b> total`;
+  }else{
+    let detail=sheets.map((sh,i)=>`Sheet ${i+1}: ${sh.placements.length} up × ${sh.printQty||1}`).join(', ');
+    cd.innerHTML=`<b>${totalPlaced}</b> total across <b>${sheets.length} sheets</b> (${detail})`+(unplacedPool.length>0?` · <span style="color:#b91c1c">${unplacedPool.length} didn't fit</span>`:'');
+  }
+
+  el('previewBox').style.display='';el('exportRow').style.display=perSheet>0?'flex':'none';el('markOptions').style.display=perSheet>0?'':'none';
+  el('dieSideOptions').style.display=(perSheet>0&&s.doubleSided)?'':'none';
+  const hasOPW=inputFiles.some(f=>f.pages.some(p=>p.opw));
+  el('opwBtn').style.display=hasOPW?'':'none';
+  const hasDiePaths=sheets.some(sh=>sh.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
+  const allHaveDie=sheets.length>0&&sheets.every(sh=>sh.placements.every(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0));
+  // Show Print+Die when there are any die paths or when perimeter dies will be generated
+  el('printDieBtn').style.display=(hasDiePaths||sheets.length>0)?'':'none';
+  el('regDotsLabel').style.display=(hasDiePaths||sheets.length>0)?'inline-flex':'none';
+  // Cut button always shows (generates perimeter cuts for files without die paths)
+  el('cutBtn').style.display='';
+}
+
+/* === MARKS === */
+function getArtGroupBounds(sheet,margin){
+  // Compute bounding box of all placements (in stock coords, including margin offset)
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  if(!sheet||!sheet.placements||!sheet.placements.length) return {x:margin,y:margin,w:0,h:0};
+  for(const p of sheet.placements){
+    const px=margin+p.x, py=margin+p.y;
+    minX=Math.min(minX,px); minY=Math.min(minY,py);
+    maxX=Math.max(maxX,px+p.w); maxY=Math.max(maxY,py+p.h);
+  }
+  return {x:minX,y:minY,w:maxX-minX,h:maxY-minY,x2:maxX,y2:maxY};
+}
+function getRegDots(W,H,artBounds){
+  // Place reg dots 1/4" around the perimeter of the art group
+  const pad=0.25;
+  if(artBounds){
+    const ax=artBounds.x-pad, ay=artBounds.y-pad;
+    const ax2=artBounds.x2+pad, ay2=artBounds.y2+pad;
+    return[
+      {x:ax,y:ay},{x:ax+3.0,y:ay},{x:ax2,y:ay},
+      {x:ax,y:ay2},{x:ax2,y:ay2}
+    ];
+  }
+  // Fallback: old behavior at sheet edges
+  const i=.375,g=3.0;return[{x:i,y:i},{x:i+g,y:i},{x:W-i,y:i},{x:i,y:H-i},{x:W-i,y:H-i}];
+}
+function getHickeys(W,H){
+  const sz=HICKEY_SIZE,dp=HICKEY_DEPTH,off=HICKEY_OFFSET;
+  return[
+    {x1:off+sz/2,y1:0,x2:off,y2:dp,x3:off+sz,y3:dp},
+    {x1:0,y1:off+sz/2,x2:dp,y2:off,x3:dp,y3:off+sz},
+    {x1:W,y1:off+sz/2,x2:W-dp,y2:off,x3:W-dp,y3:off+sz},
+    {x1:0,y1:H-off-sz/2,x2:dp,y2:H-off-sz,x3:dp,y3:H-off},
+    {x1:off+sz/2,y1:H,x2:off,y2:H-dp,x3:off+sz,y3:H-dp},
+    {x1:W-off-sz/2,y1:H,x2:W-off-sz,y2:H-dp,x3:W-off,y3:H-dp},
+    {x1:W,y1:H-off-sz/2,x2:W-dp,y2:H-off-sz,x3:W-dp,y3:H-off},
+  ];
+}
+
+/* === PREVIEW === */
+function drawPreview(){
+  const s=S(),canvas=el('preview');if(!sheets.length){canvas.width=0;return;}
+  const sheet=sheets[viewSheet]||sheets[0],maxW=680,maxH=420,scale=Math.min(maxW/s.stockW,maxH/s.stockH);
+  canvas.width=Math.ceil(s.stockW*scale);canvas.height=Math.ceil(s.stockH*scale);
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d2d2d7';ctx.setLineDash([4,3]);ctx.strokeRect(s.margin*scale,s.margin*scale,(s.stockW-2*s.margin)*scale,(s.stockH-2*s.margin)*scale);ctx.setLineDash([]);
+  for(const p of sheet.placements){
+    let px,py;
+    const isSmart=!!sheet.smartOrient;
+    if(!isSmart && viewSide==='back'){
+      if(s.flipAxis==='horizontal'){
+        px=s.margin+p.x; py=s.stockH-s.margin-p.y-p.h;
+      }else{
+        px=s.stockW-s.margin-p.x-p.w; py=s.margin+p.y;
+      }
+    }
+    else{px=s.margin+p.x;py=s.margin+p.y;}
+    const x=px*scale,y=py*scale,w=p.w*scale,h=p.h*scale;
+    // Smart orient: all face art on face side, color by view side
+    if(isSmart && !sheet.smartNeedsBack){
+      ctx.fillStyle=p._blank?'#f0f0f0':'#eff6ff';
+    } else {
+      ctx.fillStyle=viewSide==='back'?'#fef2f2':'#eff6ff';
+    }
+    ctx.fillRect(x,y,w,h);
+    if(p.bleed>0){ctx.strokeStyle='#e040a0';ctx.lineWidth=1.5;ctx.strokeRect(x+p.bleed*scale,y+p.bleed*scale,p.trimW*scale,p.trimH*scale);}
+    else{ctx.strokeStyle='#0071e3';ctx.lineWidth=1;ctx.strokeRect(x,y,w,h);}
+    ctx.fillStyle=p._blank?'#ccc':'#666';ctx.font=`${Math.max(7,Math.min(11,w/12))}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+    let lbl=p.label;
+    if(!isSmart && viewSide==='back'){
+      const bk=findBackSource(p);
+      if(bk&&bk.blank){lbl='(no back)';ctx.fillStyle='#ccc';}
+      else if(bk&&!bk.common&&!bk.blank){
+        const bf=inputFiles.find(f=>f.id===bk.fileId);
+        if(bf){const bp=bf.pages[bk.pageIndex];lbl=bf.name.replace(/\.[^.]+$/,'')+(bf.pages.length>1?' p'+(bp.index+1):'');}
+        lbl='(B) '+lbl;
+      } else if(bk&&bk.common&&commonBackData){lbl='(B) '+(commonBackData.name||'Common Back');}
+      else lbl='(B) '+lbl;
+    }
+    if(lbl.length>24)lbl=lbl.substring(0,22)+'...';
+    // Draw label, rotated 180° for smart-rotated items
+    if(isSmart && p.smartRot180){
+      ctx.save();
+      ctx.translate(x+w/2,y+h/2);
+      ctx.rotate(Math.PI);
+      ctx.fillText(lbl,0,0);
+      ctx.restore();
+    } else {
+      ctx.fillText(lbl,x+w/2,y+h/2);
+    }
+  }
+  const artBounds=getArtGroupBounds(sheet,s.margin);
+  ctx.fillStyle='#1d1d1f';for(const d of getRegDots(s.stockW,s.stockH,artBounds)){ctx.beginPath();ctx.arc(d.x*scale,d.y*scale,Math.max(2,REG_R/PTS*scale),0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#1d1d1f';for(const h of getHickeys(s.stockW,s.stockH)){ctx.beginPath();ctx.moveTo(h.x1*scale,h.y1*scale);ctx.lineTo(h.x2*scale,h.y2*scale);ctx.lineTo(h.x3*scale,h.y3*scale);ctx.closePath();ctx.fill();}
+  // Slug centered below art group bottom, 1/4" down (corners have reg dots, center is clear)
+  const slugY=artBounds.y2+0.25;
+  const slugCenterX=artBounds.x + artBounds.w/2;
+  const isSmart=!!sheet.smartOrient;
+  ctx.fillStyle='#666';ctx.font=`bold ${Math.max(7,12*scale)}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='top';
+  if(isSmart){
+    const flipDesc=sheet.flipMode==='both'?'Flip either axis':'L/R flip only';
+    ctx.fillText(buildSlug(s,viewSheet,'Smart Orient — '+flipDesc),slugCenterX*scale,slugY*scale);
+  } else {
+    ctx.fillText(buildSlug(s,viewSheet,viewSide==='back'?'Back':'Face'),slugCenterX*scale,slugY*scale);
+  }
+  const nav=el('sheetNav');let nh='';
+  if(sheets.length>1)nh+=`Sheet ${viewSheet+1}/${sheets.length} <button onclick="prevSheet()">&#9664;</button><button onclick="nextSheet()">&#9654;</button>`;
+  if(s.doubleSided&&(!isSmart||sheet.smartNeedsBack))nh+=` <button onclick="toggleSide()" style="font-weight:600">${viewSide==='face'?'Show Back':'Show Face'}</button>`;
+  nav.innerHTML=nh;
+}
+
+function buildSlug(s,si,side){
+  const p=[];if(s.jobName)p.push(s.jobName);if(s.jobNumber)p.push('#'+s.jobNumber);if(s.stockName)p.push(s.stockName);
+  if(s.scalePercent && s.scalePercent !== 100) p.push('Scale '+s.scalePercent+'%');
+  if(s.doubleSided){
+    const isLandscape=s.stockW>s.stockH;
+    const isTumble=isLandscape?(s.flipAxis==='vertical'):(s.flipAxis==='horizontal');
+    p.push(side+' -- '+(isTumble?'Tumble':'Turn'));
+  }
+  const pq=sheets[si]?sheets[si].printQty||1:sheetPrintQty;
+  p.push('Print '+pq+' times');
+  if(sheets.length>1)p.push('Sheet '+(si+1)+' of '+sheets.length);
+  return p.join('  |  ');
+}
+function prevSheet(){if(viewSheet>0){viewSheet--;drawPreview();}}
+function nextSheet(){if(viewSheet<sheets.length-1){viewSheet++;drawPreview();}}
+function toggleSide(){viewSide=viewSide==='face'?'back':'face';drawPreview();}
+
+/* === FIT SHEET TO LAYOUT === */
+function fitSheetToLayout(){
+  if(!sheets.length)return;
+  const s=S();
+  // Compute global art group bounds across ALL sheets
+  let gMinX=Infinity,gMinY=Infinity,gMaxX=-Infinity,gMaxY=-Infinity;
+  for(const sh of sheets){
+    for(const p of sh.placements){
+      const px=s.margin+p.x, py=s.margin+p.y;
+      gMinX=Math.min(gMinX,px); gMinY=Math.min(gMinY,py);
+      gMaxX=Math.max(gMaxX,px+p.w); gMaxY=Math.max(gMaxY,py+p.h);
+    }
+  }
+  if(gMinX>=gMaxX)return;
+  const artW=gMaxX-gMinX, artH=gMaxY-gMinY;
+  // New sheet = art + 1" slug margin on each side
+  const slugMargin=1.0;
+  const newW=artW+2*slugMargin, newH=artH+2*slugMargin;
+  // Offset all placements so art starts at (slugMargin - s.margin + bleed_offset, ...)
+  // The art currently starts at (gMinX, gMinY) in stock coords.
+  // We want it at (slugMargin, slugMargin) in the new sheet.
+  const dx=slugMargin-gMinX, dy=slugMargin-gMinY;
+  for(const sh of sheets){
+    for(const p of sh.placements){
+      p.x+=dx; p.y+=dy;
+    }
+  }
+  // Update stock dims
+  s.stockW=parseFloat(newW.toFixed(4)); s.stockH=parseFloat(newH.toFixed(4));
+  el('stockW').value=s.stockW; el('stockH').value=s.stockH;
+  viewSheet=0; drawPreview();
+  el('layoutInfo').textContent=`Fit to ${s.stockW.toFixed(2)}" × ${s.stockH.toFixed(2)}" (1" slug margin)`;
+}
+
+/* === SMART ORIENT (both-axis / single-axis flip) === */
+function smartOrientLayout(){
+  try{
+  const s=S();
+  if(!s.doubleSided || (s.dblMode!=='different' && s.dblMode!=='same')){
+    alert('Smart Orient requires Double-sided mode (Same or Different).');return;
+  }
+  // Note: applyBleedOverride() is NOT called here — it triggers invalidateLayout()
+  // which wipes state. Bleed is already applied from file load / settings change.
+  const scaleFactor=s.scalePercent/100;
+
+  // Collect unique face/back pairs with total quantity
+  // In "same" mode: face and back are the same file — each page is its own pair
+  // In "different" mode: face/back pairs via backRef
+  const uniquePairs=[];
+  for(const f of inputFiles)for(const p of f.pages){
+    if(s.dblMode==='different' && p.side!=='face')continue;
+    // Find the back for this face
+    let backFile=null, backPage=null;
+    if(s.dblMode==='same'){
+      // Same mode: back = same file/page
+      if(!p.noBack){ backFile=f; backPage=p; }
+    } else {
+      // Different mode: search for paired back
+      if(!p.noBack){
+        for(const bf of inputFiles)for(const bp of bf.pages){
+          if(bp.side==='back'&&bp.backRef&&bp.backRef.fileId===f.id&&bp.backRef.pageIndex===p.index){
+            backFile=bf; backPage=bp; break;
+          }
+          if(backFile)break;
+        }
+      }
+    }
+    uniquePairs.push({
+      faceFileId:f.id, facePageIndex:p.index,
+      backFileId:backFile?backFile.id:null, backPageIndex:backPage?backPage.index:null,
+      noBack:!!p.noBack || !backFile,
+      physW:p.physW*scaleFactor, physH:p.physH*scaleFactor,
+      trimW:p.trimW*scaleFactor, trimH:p.trimH*scaleFactor,
+      bleed:p.bleed*scaleFactor,
+      srcW:(p.srcW||p.physW)*scaleFactor, srcH:(p.srcH||p.physH)*scaleFactor,
+      srcBleed:(p.srcBleed!==undefined?p.srcBleed:p.bleed)*scaleFactor,
+      enlargeBleed:!!p.enlargeBleed, diePaths:p.diePaths||null,
+      scaleFactor:scaleFactor,
+      faceName:f.name.replace(/\.[^.]+$/,'')+(f.pages.length>1?' p'+(p.index+1):''),
+      backName:backFile?(backFile.name.replace(/\.[^.]+$/,'')+(backFile.pages.length>1?' p'+(backPage.index+1):'')):'',
+      qty:p.qty||1,
+    });
+  }
+  // Expand pairs by qty — each copy needs cavities on the sheet
+  // In "same" mode: 1 cavity per piece (back = same art, applied via flip)
+  // In "different" mode: 2 cavities per pair (1 face + 1 back)
+  const isSameMode=s.dblMode==='same';
+  const expandedPairs=[];
+  for(const pair of uniquePairs){
+    for(let q=0;q<pair.qty;q++) expandedPairs.push({...pair, qty:1});
+  }
+  const pairs=expandedPairs;
+
+  if(pairs.length<1){
+    alert('Smart Orient needs at least 1 piece.');return;
+  }
+
+  // Check all same size (smart orient only works for uniform sizes)
+  const refW=pairs[0].trimW, refH=pairs[0].trimH;
+  if(!pairs.every(p=>Math.abs(p.trimW-refW)<0.01 && Math.abs(p.trimH-refH)<0.01)){
+    alert('Smart Orient requires all pieces to be the same size.');return;
+  }
+
+  // Determine piece dimensions (portrait orientation: trimW <= trimH)
+  const pieceW=Math.min(refW,refH), pieceH=Math.max(refW,refH);
+  const physW=Math.min(pairs[0].physW,pairs[0].physH), physH=Math.max(pairs[0].physW,pairs[0].physH);
+  const isRotated=refW>refH; // source is landscape, needs 90° rotation to become portrait
+  const gut=s.gutter;
+
+  // Cavities needed:
+  // "same" mode: 1 cavity per piece — back is same art on back page
+  // "different" mode: 2 cavities per piece — face + back on SAME side (quadrant layout)
+  const totalCavities=isSameMode ? pairs.length : pairs.length*2;
+
+  // Find best grid within stock (content area = stock - 2*margin)
+  const cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
+  const bl=pairs[0].bleed;
+
+  // Try all even×even and even×odd grids
+  // We want the grid that fits the MOST cavities (up to totalCavities), minimizing leftover
+  const candidates=[];
+
+  function tryGrid(cols,rows,rotItems){
+    // Item dims when placed on sheet
+    const iW=rotItems?pieceH:pieceW, iH=rotItems?pieceW:pieceH;
+    const iTrimW=rotItems?Math.max(refW,refH):Math.min(refW,refH);
+    const iTrimH=rotItems?Math.min(refW,refH):Math.max(refW,refH);
+    const needW=cols*iTrimW+(cols-1)*gut;
+    const needH=rows*iTrimH+(rows-1)*gut;
+    if(needW>cW+0.001||needH>cH+0.001)return;
+    const capacity=cols*rows;
+    // Grid must hold at least 1 pair
+    if(isSameMode && capacity<1)return;
+    if(!isSameMode && capacity<2)return;
+
+    const bothAxis=cols%2===0&&rows%2===0;
+    const lrOnly=cols%2===0&&rows%2!==0;
+    const tbOnly=cols%2!==0&&rows%2===0;
+    // Odd cols AND odd rows → fall back to standard layout
+    if(cols%2!==0&&rows%2!==0)return;
+
+    let flipMode;
+    if(bothAxis) flipMode='both';
+    else if(lrOnly) flipMode='lr';
+    else if(tbOnly) flipMode='tb';
+    else return;
+
+    // How many pairs fit on this grid? 1 per cavity (same) or 1 per 2 cavities (different)
+    const pairsPerSheet=isSameMode ? capacity : Math.floor(capacity/2);
+    const pairsNeeded=pairs.length;
+    const sheetsNeeded=Math.ceil(pairsNeeded/pairsPerSheet);
+    const extraCavities=pairsPerSheet*sheetsNeeded - pairsNeeded;
+    const waste=1-(Math.min(pairsNeeded,pairsPerSheet)*iTrimW*iTrimH)/(cW*cH);
+    candidates.push({cols,rows,rotItems,iW,iH,iTrimW,iTrimH,capacity,flipMode,waste,
+      extraCavities,pairsPerSheet,sheetsNeeded,needW,needH});
+  }
+
+  // Try portrait and landscape (rotated 90°) item orientations
+  for(const rotItems of[false,true]){
+    for(let cols=1;cols<=40;cols++){
+      for(let rows=1;rows<=40;rows++){
+        tryGrid(cols,rows,rotItems);
+      }
+    }
+  }
+
+  if(!candidates.length){
+    alert('No smart orient layout fits on the stock. Try a larger stock size.');return;
+  }
+
+  // Sort: exact fit first (0 empties), then most pairs per sheet, then both-axis, then least waste
+  const cavPerPair=isSameMode?1:2;
+  candidates.sort((a,b)=>{
+    // Exact fit (0 empties on last sheet) is king
+    const aLastPairs=pairs.length - a.pairsPerSheet*(a.sheetsNeeded-1);
+    const aLastEmpty=a.capacity - aLastPairs*cavPerPair;
+    const bLastPairs=pairs.length - b.pairsPerSheet*(b.sheetsNeeded-1);
+    const bLastEmpty=b.capacity - bLastPairs*cavPerPair;
+    if((aLastEmpty===0)!==(bLastEmpty===0)) return aLastEmpty===0?-1:1;
+    // Among exact fits (or among non-exact), prefer most pairs per sheet
+    if(b.pairsPerSheet!==a.pairsPerSheet)return b.pairsPerSheet-a.pairsPerSheet;
+    const ap=a.flipMode==='both'?0:1, bp=b.flipMode==='both'?0:1;
+    if(ap!==bp)return ap-bp;
+    return a.waste-b.waste;
+  });
+
+  const best=candidates[0];
+  const pairsOnSheet=Math.min(pairs.length, best.pairsPerSheet);
+  const usedCavities=pairsOnSheet;
+  const emptyCavities=best.capacity-usedCavities;
+
+  // If there are empty cavities on the last sheet, just proceed (user will input even numbers)
+  const totalPrintRuns=best.sheetsNeeded;
+
+  // Build the layout!
+  // "same" mode: all same art, 180° bottom half for both-axis. Back page via normal flip.
+  // "different" mode: quadrant layout — face+back on SAME side, single print, no back page.
+  //   Both-axis: TL=B↑, TR=F↑, BL=F↓, BR=B↓
+  //   L/R only: left=B, right=F, all upright
+  //   T/B only: top=B, bottom=F, all upright
+
+  const placements=[];
+  const halfC=Math.floor(best.cols/2);
+  const halfR=Math.floor(best.rows/2);
+
+  for(let r=0;r<best.rows;r++){
+    for(let c=0;c<best.cols;c++){
+      const x=c*(best.iTrimW+gut)-bl;
+      const y=r*(best.iTrimH+gut)-bl;
+      let rot180=false, isFace=true;
+
+      if(isSameMode){
+        // Same mode: every cavity is face art. 180° bottom half for both-axis.
+        if(best.flipMode==='both') rot180=r>=halfR;
+      } else {
+        // Different mode: quadrant F/B split
+        if(best.flipMode==='both'){
+          const left=c<halfC, top=r<halfR;
+          isFace=!left;
+          rot180=!top;
+          if(!top) isFace=!isFace;
+        } else if(best.flipMode==='lr'){
+          isFace=c>=halfC;
+        } else {
+          isFace=r>=halfR;
+        }
+      }
+
+      const itemRotated=best.rotItems?(refW<=refH):refW>refH;
+      placements.push({
+        fileId:null, pageIndex:null,
+        x:x, y:y,
+        w:best.iW+2*bl, h:best.iH+2*bl,
+        trimW:best.iTrimW, trimH:best.iTrimH,
+        bleed:bl, rotated:itemRotated,
+        canFlip:false,
+        physW:best.rotItems?physH:physW, physH:best.rotItems?physW:physH,
+        trimWOrig:best.rotItems?Math.max(refW,refH):Math.min(refW,refH),
+        trimHOrig:best.rotItems?Math.min(refW,refH):Math.max(refW,refH),
+        srcW:pairs[0].srcW, srcH:pairs[0].srcH, srcBleed:pairs[0].srcBleed,
+        enlargeBleed:pairs[0].enlargeBleed, diePaths:pairs[0].diePaths,
+        scaleFactor:pairs[0].scaleFactor,
+        smartRot180:rot180,
+        _isFace:isFace,
+        label:'',
+        type:'pdf',
+      });
+    }
+  }
+
+  // Assign pairs to slots
+  if(isSameMode){
+    // Same mode: all slots get face art, back page via normal flip
+    for(let i=0;i<pairsOnSheet && i<placements.length;i++){
+      const pair=pairs[i];
+      placements[i].fileId=pair.faceFileId;
+      placements[i].pageIndex=pair.facePageIndex;
+      placements[i].label=pair.faceName;
+      placements[i].type=inputFiles.find(f2=>f2.id===pair.faceFileId)?.type||'pdf';
+    }
+  } else {
+    // Different mode: face slots get face art, back slots get back art
+    const faceSlots=placements.filter(p=>p._isFace);
+    const backSlots=placements.filter(p=>!p._isFace);
+    for(let i=0;i<pairsOnSheet;i++){
+      const pair=pairs[i];
+      if(i<faceSlots.length){
+        faceSlots[i].fileId=pair.faceFileId;
+        faceSlots[i].pageIndex=pair.facePageIndex;
+        faceSlots[i].label=pair.faceName;
+        faceSlots[i].type=inputFiles.find(f2=>f2.id===pair.faceFileId)?.type||'pdf';
+      }
+      if(i<backSlots.length){
+        backSlots[i].fileId=pair.noBack?null:pair.backFileId;
+        backSlots[i].pageIndex=pair.noBack?null:pair.backPageIndex;
+        backSlots[i].label=pair.noBack?'(no back)':'(B) '+pair.backName;
+        backSlots[i].type=pair.noBack?null:(inputFiles.find(f2=>f2.id===pair.backFileId)?.type||'pdf');
+        if(pair.noBack) backSlots[i]._blank=true;
+      }
+    }
+  }
+
+  // Center placements in content area
+  centerPlacements(placements,cW,cH);
+
+  // printQty = how many times to print this sheet to fulfill the total qty
+  const printQty=totalPrintRuns;
+
+  // Build sheets
+  // "same" mode: needs back page (same art, flipped)
+  // "different" mode: single-sided (face+back on same side), NO back page
+  const needsBackPage=isSameMode;
+  sheets=[{placements:placements,printQty:printQty,smartOrient:true,smartNeedsBack:needsBackPage,flipMode:best.flipMode}];
+  sheetPrintQty=printQty;
+  viewSheet=0;viewSide='face';
+
+  // Update stock display
+  el('stockW').value=s.stockW; el('stockH').value=s.stockH;
+  drawPreview();
+
+  const flipDesc=best.flipMode==='both'?'✅ Flip either axis':best.flipMode==='lr'?'⚠️ L/R flip only':'⚠️ T/B flip only';
+  el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} per sheet (${usedCavities} cavities) | ${flipDesc}`;
+  const cd=el('sheetCalc');cd.style.display='';
+  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} · ${flipDesc} · Print ${printQty} time${printQty>1?'s':''} = ${pairs.length} total`;
+
+  el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
+  el('dieSideOptions').style.display=isSameMode?'':'none';
+  el('layoutChoices').style.display='none';
+  // Show/hide buttons same as selectLayout
+  el('printDieBtn').style.display='';
+  el('regDotsLabel').style.display='inline-flex';
+  el('cutBtn').style.display='';
+  el('opwBtn').style.display=inputFiles.some(f=>f.pages.some(p=>p.opw))?'':'none';
+  // Keep smart orient button visible
+  el('smartOrientBtn').style.display='';
+  }catch(err){
+    console.error('[SmartOrient] Error:',err);
+    alert('Smart Orient error: '+err.message);
+    // Ensure button stays visible after error
+    const sb=el('smartOrientBtn'); if(sb) sb.style.display='';
+  }
+}
+
+function findBackSource(p){
+  const s=S();if(!s.doubleSided)return null;
+  if(s.dblMode==='same'){
+    // Check if this face page has noBack flag
+    const ff=inputFiles.find(f2=>f2.id===p.fileId);
+    if(ff){const pg=ff.pages.find(pg2=>pg2.index===p.pageIndex);if(pg&&pg.noBack)return{blank:true};}
+    return{fileId:p.fileId,pageIndex:p.pageIndex};
+  }
+  if(s.dblMode==='common'){
+    const ff=inputFiles.find(f2=>f2.id===p.fileId);
+    if(ff){const pg=ff.pages.find(pg2=>pg2.index===p.pageIndex);if(pg&&pg.noBack)return{blank:true};}
+    return commonBackData?{common:true}:null;
+  }
+  // 'different' mode: check noBack on face first
+  const ff=inputFiles.find(f2=>f2.id===p.fileId);
+  if(ff){const pg=ff.pages.find(pg2=>pg2.index===p.pageIndex);if(pg&&pg.noBack)return{blank:true};}
+  // Search all back pages for one whose backRef matches this face placement.
+  for(const f of inputFiles){
+    for(const pg of f.pages){
+      if(pg.side==='back'&&pg.backRef&&
+         pg.backRef.fileId===p.fileId&&pg.backRef.pageIndex===p.pageIndex){
+        if(pg.backRef.blank) return {blank:true};
+        return{fileId:f.id,pageIndex:pg.index};
+      }
+    }
+  }
+  return null;
+}
+
+/* === DIE STRIPPING (for Print PDF — remove die spots so Caldera doesn't generate cut marks) === */
+// Colorspace-aware stripping: only removes operations painted in the die colorspace.
+// The die CS is activated by "/CSn CS ... SCN" and deactivated when a different colorspace
+// is set (any "cs", "CS", "g", "G", "rg", "RG", "k", "K", "sc", "SC" operator outside
+// the die CS). Each q/Q pair scoped within the die is removed entirely. This avoids
+// the old bug where the backwards q/W n walk removed CMYK art that shared the same
+// enclosing clip group as the die.
+async function stripDieFromPdfDoc(pdfBytes, dieCSNames, dieCSCmyk){
+  if(!dieCSNames || !dieCSNames.length) return null;
+  let _diag = 'stripDie: csNames=' + dieCSNames.join(',') + ', bytesLen=' + (pdfBytes?pdfBytes.length:0);
+  try {
+    const doc = await PDFLib.PDFDocument.load(pdfBytes, {ignoreEncryption:true});
+    const pages = doc.getPages();
+    _diag += ', pages=' + pages.length;
+    let anyModified = false;
+    let totalDieFills = 0, totalDieStrokes = 0;
+    
+    for(let pi=0; pi<pages.length; pi++){
+      const node = pages[pi].node;
+      const contentsRef = node.get(PDFLib.PDFName.of('Contents'));
+      if(!contentsRef) continue;
+      
+      let streams = [];
+      const contents = doc.context.lookup(contentsRef);
+      if(contents instanceof PDFLib.PDFArray){
+        for(let i=0;i<contents.size();i++){
+          const s = doc.context.lookup(contents.get(i));
+          if(s) streams.push(s);
+        }
+      } else {
+        streams.push(contents);
+      }
+      
+      for(const s of streams){
+        let compressedBytes = null;
+        if(s.getContents) compressedBytes = s.getContents();
+        else if(s.contents) compressedBytes = s.contents;
+        else if(s.getUnencodedContents) compressedBytes = s.getUnencodedContents();
+        if(!compressedBytes){ _diag += ', stream=no_bytes'; continue; }
+        _diag += ', stream='+compressedBytes.length+'b';
+        
+        // Check if this stream has a /Filter
+        let hasFilter = false;
+        try {
+          if(s.dict){
+            const filterVal = s.dict.get(PDFLib.PDFName.of('Filter'));
+            if(filterVal) hasFilter = true;
+          }
+        } catch(e) {}
+        _diag += (hasFilter?'(filtered)':'(raw)');
+        
+        // Get text: decompress or use raw
+        let text;
+        if(hasFilter){
+          text = await decompressPdfStream(compressedBytes);
+          if(!text){ _diag += '(decomp_FAIL)'; continue; }
+        } else {
+          text = new TextDecoder('latin1').decode(compressedBytes);
+        }
+        _diag += '→'+text.length+'chars';
+        
+        // Check if this stream contains die CS references
+        let hasDie = dieCSNames.some(n => text.includes('/'+n));
+        if(!hasDie){ _diag += '(no_die)'; continue; }
+        _diag += '(HAS_DIE)';
+        
+        // Simple die stripping: find the die CS activation and its associated
+        // stroke block, remove ONLY that. Everything else stays untouched.
+        // Structure: /CSn CS ... SCN → [w] → q...S...Q (die stroke) → q...f...Q (art, kept)
+        // We remove from the CS activation through the first q...S...Q block.
+        let dieStrokeCount = 0, dieFillCount = 0;
+        let modified = false;
+        
+        for(const csName of dieCSNames){
+          const csMarker = '/' + csName + ' CS';
+          let idx = text.indexOf(csMarker);
+          while(idx >= 0){
+            // From the CS activation, scan forward to find the first q...Q block
+            // and check if it contains S (stroke = die) or f (fill = art)
+            const afterCS = text.substring(idx);
+            const aLines = afterCS.split('\n');
+            let depth = 0;
+            let firstQLine = -1; // line index of first q at depth 0→1
+            let paintLine = -1;  // line index of first S or f
+            let paintOp = null;
+            let closeQLine = -1; // line index of Q that closes the first q
+            
+            for(let ai = 1; ai < aLines.length; ai++){ // skip line 0 (CS activation)
+              const al = aLines[ai].trim();
+              if((al === 'q' || al.startsWith('q ')) && depth === 0 && firstQLine < 0){
+                firstQLine = ai;
+              }
+              if(al === 'q' || al.startsWith('q ')) depth++;
+              else if(al === 'Q'){
+                depth--;
+                if(depth === 0 && firstQLine >= 0 && closeQLine < 0){
+                  closeQLine = ai;
+                  break; // found the first complete q...Q block
+                }
+                if(depth < 0) break; // exited parent scope
+              }
+              // Detect paint ops at depth 0 (bare stroke/fill, no q wrapper)
+              // or at depth 1 (inside first q...Q block)
+              else if((depth === 0 || depth === 1) && paintLine < 0){
+                if(al === 'S' || al === 's'){ paintOp = 'S'; paintLine = ai; if(depth === 0) break; }
+                else if(al === 'f' || al === 'f*'){ paintOp = 'f'; paintLine = ai; if(depth === 0) break; }
+                else if(al === 'B' || al === 'B*'){ paintOp = 'B'; paintLine = ai; if(depth === 0) break; }
+              }
+            }
+            
+            if(paintOp === 'S'){
+              // Die stroke found — remove it
+              dieStrokeCount++;
+              let removeStart = idx;
+              let removeEnd;
+              
+              if(closeQLine > 0){
+                // Stroke inside q...Q block: remove CS activation through Q
+                let charCount = 0;
+                for(let ai = 0; ai <= closeQLine; ai++){
+                  charCount += aLines[ai].length + 1;
+                }
+                removeEnd = idx + charCount;
+              } else {
+                // Bare stroke at depth 0 (no q wrapper): remove CS activation through S line
+                let charCount = 0;
+                for(let ai = 0; ai <= paintLine; ai++){
+                  charCount += aLines[ai].length + 1;
+                }
+                removeEnd = idx + charCount;
+              }
+              
+              // Also look backwards: if there's a bare 'q' right before the CS
+              // that's part of this die group, include it in the removal
+              // (some files wrap the entire die in an outer q...Q)
+              
+              text = text.substring(0, removeStart) + text.substring(removeEnd);
+              modified = true;
+              idx = text.indexOf(csMarker, removeStart);
+              continue;
+            } else if(paintOp === 'f' || paintOp === 'B'){
+              dieFillCount++;
+            }
+            
+            idx = text.indexOf(csMarker, idx + csMarker.length);
+          }
+        }
+        
+        if(!modified) continue;
+        
+        // Second pass: remove orphan strokes that relied on the now-removed die CS.
+        // These are bare "rect re S" or "path S" blocks between the position where
+        // the die CS activation was and the next color-setting operator.
+        // After removing the CS activation, these would render in default black.
+        // Simple approach: scan the modified text for any S at depth 0 that isn't
+        // preceded by a non-die color setting (k/K/rg/RG/CS).
+        {
+          const lines2 = text.split('\n');
+          let hasDieColor = false; // true after we see where a die CS WAS (now removed)
+          let outText = [];
+          let pendingPath = []; // accumulate path ops until we see S or f
+          for(let i = 0; i < lines2.length; i++){
+            const t = lines2[i].trim();
+            // Track if die color could be active: it was set before and no other color replaced it
+            // A non-die CS or device color resets it
+            if(t.match(/^\d[\d. ]+ k$/) || t.match(/^\d[\d. ]+ K$/) || 
+               t.match(/^\d[\d. ]+ rg$/) || t.match(/^\d[\d. ]+ RG$/) ||
+               (t.match(/^\/\w+\s+CS\b/) && !dieCSNames.some(n => t.includes('/'+n+' CS')))){
+              hasDieColor = false;
+              if(pendingPath.length){ for(const pp of pendingPath) outText.push(pp); pendingPath = []; }
+              outText.push(lines2[i]);
+              continue;
+            }
+            // If we see a die CS marker position (would have been removed), mark die color active
+            // We detect this by: position in stream is after where first strip happened
+            // Actually simpler: if a CS was stripped, the content right after the strip point
+            // inherits whatever the die CS was. The first non-die color op clears it.
+            // We set hasDieColor = true when we see a bare S with no preceding color change
+            // since the last non-die color op.
+            
+            // For bare strokes: if we're accumulating a path and hit S, check if it's orphaned
+            if(t === 'S' || t === 's'){
+              // Is this stroke preceded by a color-setting op? Check pendingPath
+              const hasColor = pendingPath.some(pp => {
+                const pt = pp.trim();
+                return pt.match(/^\d[\d. ]+ [kKgG]$/) || pt.match(/^\d[\d. ]+ r[gG]$/) ||
+                       pt.match(/^\/\w+\s+CS\b/);
+              });
+              if(!hasColor && pendingPath.length > 0){
+                // Orphan stroke — no color set since last boundary. 
+                // Check if it's just a rect (likely die)
+                const hasRect = pendingPath.some(pp => pp.trim().match(/^[\d.\- ]+ re$/));
+                if(hasRect){
+                  // Remove this orphan stroke path
+                  dieStrokeCount++;
+                  pendingPath = [];
+                  continue;
+                }
+              }
+              for(const pp of pendingPath) outText.push(pp);
+              pendingPath = [];
+              outText.push(lines2[i]);
+              continue;
+            }
+            if(t === 'f' || t === 'f*' || t === 'B' || t === 'B*' || t === 'Q' || t === 'q' || t.startsWith('q ')){
+              for(const pp of pendingPath) outText.push(pp);
+              pendingPath = [];
+              outText.push(lines2[i]);
+              continue;
+            }
+            // Path operators or other — accumulate
+            if(t.match(/[\d.\-]+ (m|l|c|v|y|re)$/) || t === 'h' || t.match(/^[\d.]+ w$/)){
+              pendingPath.push(lines2[i]);
+              continue;
+            }
+            // Everything else — flush and keep
+            for(const pp of pendingPath) outText.push(pp);
+            pendingPath = [];
+            outText.push(lines2[i]);
+          }
+          for(const pp of pendingPath) outText.push(pp);
+          text = outText.join('\n');
+        }
+        
+        // Recompress (or use raw if no filter)
+        const cleanedBytes = new TextEncoder().encode(text);
+        if(hasFilter){
+          const recompressed = await compressStream(cleanedBytes);
+          if(!recompressed) continue;
+          if(s.contents !== undefined){ s.contents = recompressed; anyModified = true; totalDieFills += dieFillCount; totalDieStrokes += dieStrokeCount; }
+        } else {
+          if(s.contents !== undefined){ s.contents = cleanedBytes; anyModified = true; totalDieFills += dieFillCount; totalDieStrokes += dieStrokeCount; }
+        }
+      }
+    }
+    
+    if(!anyModified){ console.log(_diag + ' → NO MODS'); return null; }
+    // Remove die colorspace resource entries so Caldera doesn't see the spot
+    for(let pi=0; pi<pages.length; pi++){
+      try {
+        const node = pages[pi].node;
+        const res = doc.context.lookup(node.get(PDFLib.PDFName.of('Resources')));
+        if(!res) continue;
+        const csDict = res instanceof PDFLib.PDFDict
+          ? doc.context.lookup(res.get(PDFLib.PDFName.of('ColorSpace')))
+          : null;
+        if(csDict && csDict instanceof PDFLib.PDFDict){
+          for(const csName of dieCSNames){
+            csDict.delete(PDFLib.PDFName.of(csName));
+          }
+        }
+      } catch(e){}
+    }
+    const stripped = await doc.save({useObjectStreams:false});
+    console.log(_diag + ' → STRIPPED, fills=' + totalDieFills + ', strokes=' + totalDieStrokes);
+    return {bytes: stripped, dieFills: totalDieFills, dieStrokes: totalDieStrokes};
+  } catch(e) {
+    console.warn('stripDieFromPdfDoc failed:', e, _diag);
+    return null;
+  }
+}
+
+/* Extract die-only PDF: inverse of stripDieFromPdfDoc.
+   Keeps ONLY the die spot color operations, removes all CMYK art/images.
+   Result is a transparent page with just the die lines. */
+async function extractDieOnlyFromPdfDoc(pdfBytes, dieCSNames){
+  if(!dieCSNames || !dieCSNames.length) return null;
+  try {
+    const doc = await PDFLib.PDFDocument.load(pdfBytes, {ignoreEncryption:true});
+    const pages = doc.getPages();
+    let anyModified = false;
+
+    for(let pi=0; pi<pages.length; pi++){
+      const node = pages[pi].node;
+      const contentsRef = node.get(PDFLib.PDFName.of('Contents'));
+      if(!contentsRef) continue;
+
+      let streams = [];
+      const contents = doc.context.lookup(contentsRef);
+      if(contents instanceof PDFLib.PDFArray){
+        for(let i=0;i<contents.size();i++){
+          const s = doc.context.lookup(contents.get(i));
+          if(s) streams.push(s);
+        }
+      } else {
+        streams.push(contents);
+      }
+
+      for(const s of streams){
+        let compressedBytes = null;
+        if(s.getContents) compressedBytes = s.getContents();
+        else if(s.contents) compressedBytes = s.contents;
+        else if(s.getUnencodedContents) compressedBytes = s.getUnencodedContents();
+        if(!compressedBytes) continue;
+
+        let hasFilter = false;
+        try { if(s.dict){ const fv=s.dict.get(PDFLib.PDFName.of('Filter')); if(fv) hasFilter=true; } } catch(e){}
+
+        let text;
+        if(hasFilter){
+          text = await decompressPdfStream(compressedBytes);
+          if(!text) continue;
+        } else {
+          text = new TextDecoder('latin1').decode(compressedBytes);
+        }
+
+        if(!dieCSNames.some(n => text.includes('/'+n))) continue;
+
+        // Parse: keep only lines inside die CS sections, remove everything else
+        const lines = text.split('\n');
+        const outLines = [];
+        let inDieSection = false;
+        let depth = 0;
+
+        for(const line of lines){
+          const t = line.trim();
+
+          // Detect die CS activation
+          if(!inDieSection && dieCSNames.some(n => t.includes('/'+n+' CS') && t.includes('SCN'))){
+            inDieSection = true;
+            depth = 0;
+            outLines.push(line);
+            continue;
+          }
+
+          if(inDieSection){
+            // Detect switch away from die CS
+            if(t.includes(' CS ') && !dieCSNames.some(n => t.includes('/'+n))){
+              inDieSection = false;
+              continue;
+            }
+            // Non-die color ops end die section
+            if(t.match(/^[\d.][\d. ]+ k$/) || t.match(/^[\d.][\d. ]+ K$/) ||
+               t.match(/^[\d.][\d. ]+ rg$/) || t.match(/^[\d.][\d. ]+ RG$/) ||
+               t.match(/^[\d.][\d. ]+ g$/) || t.match(/^[\d.][\d. ]+ G$/)){
+              inDieSection = false;
+              continue;
+            }
+            // Keep die ops: path, stroke, transforms, q/Q
+            outLines.push(line);
+          }
+          // Outside die section: skip everything (removes CMYK art, images, text)
+        }
+
+        const newText = outLines.join('\n');
+        const cleanedBytes = new TextEncoder().encode(newText);
+        if(hasFilter){
+          const recompressed = await compressStream(cleanedBytes);
+          if(!recompressed) continue;
+          if(s.contents !== undefined){ s.contents = recompressed; anyModified = true; }
+        } else {
+          if(s.contents !== undefined){ s.contents = cleanedBytes; anyModified = true; }
+        }
+      }
+
+      // Remove all XObject image references (removes embedded images)
+      try {
+        const res = doc.context.lookup(node.get(PDFLib.PDFName.of('Resources')));
+        if(res && res instanceof PDFLib.PDFDict){
+          const xoDict = doc.context.lookup(res.get(PDFLib.PDFName.of('XObject')));
+          if(xoDict && xoDict instanceof PDFLib.PDFDict){
+            // Remove all image XObjects, keep Forms
+            for(const [key, val] of xoDict.entries()){
+              const xobj = doc.context.lookup(val);
+              if(xobj){
+                try {
+                  const subtype = xobj.get ? xobj.get(PDFLib.PDFName.of('Subtype')) : null;
+                  if(subtype && subtype instanceof PDFLib.PDFName && subtype.decodeText() === 'Image'){
+                    xoDict.delete(key);
+                  }
+                } catch(e){}
+              }
+            }
+          }
+        }
+      } catch(e){}
+    }
+
+    if(!anyModified) return null;
+    return await doc.save({useObjectStreams:false});
+  } catch(e) {
+    console.warn('extractDieOnlyFromPdfDoc failed:', e);
+    return null;
+  }
+}
+
+// Compress using browser CompressionStream
+async function compressStream(bytes){
+  for(const fmt of ['deflate', 'deflate-raw']){
+    try {
+      const cs = new CompressionStream(fmt);
+      const writer = cs.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+      const reader = cs.readable.getReader();
+      const chunks = [];
+      let done = false;
+      while(!done){
+        const r = await reader.read();
+        if(r.done){ done = true; break; }
+        chunks.push(r.value);
+      }
+      const total = chunks.reduce((s,c)=>s+c.length, 0);
+      const result = new Uint8Array(total);
+      let off = 0;
+      for(const c of chunks){ result.set(c, off); off += c.length; }
+      return result;
+    } catch(e) {}
+  }
+  return null;
+}
+
+/* === EXPORT PRINT PDF === */
+async function exportPrintPDF(){
+  const btn=el('printBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+    const cache=new Map(),used=new Set();
+    for(const sh of sheets)for(const p of sh.placements){
+      if(p._blank||p.fileId==null)continue;
+      used.add(`${p.fileId}-${p.pageIndex}`);
+      // Smart orient with back page: also collect back file refs
+      const bk=findBackSource(p);if(bk&&!bk.common&&!bk.blank)used.add(`${bk.fileId}-${bk.pageIndex}`);
+    }
+    for(const f of inputFiles){const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){
+        // Collect die CS names from pages that have die paths
+        const dieCSNames = [];
+        const dieCSCmyk = {};
+        for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
+        let sd;
+        if(dieCSNames.length>0){
+          // Strip die from Print PDF so Caldera doesn't generate cut marks
+          const stripResult=await stripDieFromPdfDoc(f.bytes,dieCSNames,dieCSCmyk);
+          if(stripResult){
+            sd=await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true});
+            if(stripResult.dieFills>0){
+              alert('⚠ Die layer contains ' + stripResult.dieFills + ' FILLED object(s).\n\nFilled objects on the die layer are kept as print content (not stripped). Only ' + stripResult.dieStrokes + ' stroked die path(s) were removed.\n\nIf the die line itself is a filled object, it will still appear in the Print PDF. Check the source file in Illustrator.');
+            }
+          } else {
+            sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+          }
+        } else {
+          sd=await PDFLib.PDFDocument.load(f.bytes,{ignoreEncryption:true});
+        }
+        for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+      }
+      else{let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);cache.set(`${f.id}-0`,{ref:e,kind:'image'});}}
+    // Embed common back if needed
+    let commonEmbed=null;
+    if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
+      if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
+      else{let e;if(commonBackData.mimeType==='image/jpeg')e=await outDoc.embedJpg(commonBackData.bytes);else e=await outDoc.embedPng(commonBackData.bytes);commonEmbed={ref:e,kind:'image'};}
+    }
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const ab=getArtGroupBounds(sheet,s.margin);
+      const fp=outDoc.addPage([Wp,Hp]);placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');placeMarks(fp,s,Wp,Hp,fontB,si,sheet.smartOrient?'Smart Orient':'Face',{artBounds:ab});
+      if(s.doubleSided && (!sheet.smartOrient || sheet.smartNeedsBack)){
+        // For "same" mode, always generate a back page — the back uses the same art
+        // but positioned for the other side of the sheet (flipped), so it's never redundant.
+        let needsBack=true;
+        if(s.dblMode==='same'){
+          // Always need back in "same" mode — the back is the same art flipped,
+          // not a mirror copy of the face layout.
+          needsBack=true;
+        }
+        if(needsBack){const bp=outDoc.addPage([Wp,Hp]);placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');placeMarks(bp,s,Wp,Hp,fontB,si,'Back',{artBounds:ab});}
+      }
+    }
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_Print.pdf');
+  }catch(err){alert('Export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download Print PDF';
+}
+
+function placeContent(page,sheet,cache,commonEmbed,s,Wp,Hp,side){
+  for(const p of sheet.placements){
+    let c;
+    if(side==='back'){
+      const bk=findBackSource(p);if(!bk||bk.blank)continue;
+      if(bk.common){c=commonEmbed;if(!c)continue;}
+      else{c=cache.get(`${bk.fileId}-${bk.pageIndex}`);if(!c)continue;}
+    }else{
+      if(p._blank)continue; // blank cavity in smart orient
+      c=cache.get(`${p.fileId}-${p.pageIndex}`);if(!c)continue;
+    }
+    const w=p.w*PTS,h=p.h*PTS;
+    if(side==='face'){
+      const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+      drawItem(page,c,x,y,p,Wp,Hp,p.smartRot180||false);
+    }else{
+      // Back side: mirror position along flip axis.
+      // TB (horizontal): Y-mirrored position + 180° content rotation
+      // LR (vertical):   X-mirrored position, no content transform
+      let bx,by;
+      if(s.flipAxis==='horizontal'){
+        bx=(s.margin+p.x)*PTS;
+        by=(s.margin+p.y)*PTS;
+      }else{
+        bx=Wp-(s.margin+p.x+p.w)*PTS;
+        by=Hp-(s.margin+p.y+p.h)*PTS;
+      }
+      drawItem(page,c,bx,by,p,Wp,Hp,false,true,s.flipAxis);
+    }
+  }
+}
+
+function drawItem(page,c,x,y,p,Wp,Hp,rotate180,isBack,flipAxis){
+  const w=p.w*PTS,h=p.h*PTS;
+  const sf=p.scaleFactor||1;
+  // Clip to the user's bleed box (trim + user bleed on each side)
+  page.pushOperators(PDFLib.pushGraphicsState(), PDFLib.rectangle(x,y,w,h), PDFLib.clip(), PDFLib.endPath());
+
+  // Back-side content: North model — tops of files always point to North on both sides.
+  if(isBack && flipAxis==='horizontal' && !p.rotated){
+    page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, x+w, y+h));
+  }
+
+  // Legacy 180° rotation (kept for compatibility, not used in new back-side path)
+  if(rotate180){
+    page.pushOperators(PDFLib.concatTransformationMatrix(-1,0,0,-1, 2*x+w, 2*y+h));
+  }
+
+  // Enlarge mode: stretch source to fill bleed box (non-proportional scale, no resample)
+  if(p.enlargeBleed){
+    if(p.rotated){
+      page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, x, y+h));
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:h,height:w});
+      else page.drawImage(c.ref,{x:0,y:0,width:h,height:w});
+    } else if(isBack && flipAxis==='horizontal'){
+      // 180° CTM is active — draw at (0,0) so the flip maps it to fill the clip rect
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:w,height:h});
+      else page.drawImage(c.ref,{x:0,y:0,width:w,height:h});
+    } else {
+      if(c.kind==='page') page.drawPage(c.ref,{x:x,y:y,width:w,height:h});
+      else page.drawImage(c.ref,{x:x,y:y,width:w,height:h});
+    }
+  } else {
+    // Draw at scaled source dimensions
+    const srcW=(p.srcW||p.w)*PTS, srcH=(p.srcH||p.h)*PTS;
+    const srcBl=(p.srcBleed||p.bleed)*PTS, usrBl=p.bleed*PTS;
+    if(p.rotated){
+      const rSrcW=(p.srcW||p.w)*PTS, rSrcH=(p.srcH||p.h)*PTS;
+      const rox=x-(srcBl-usrBl), roy=y+h+(srcBl-usrBl);
+      page.pushOperators(PDFLib.concatTransformationMatrix(0,-1,1,0, rox, roy));
+      if(c.kind==='page') page.drawPage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+      else page.drawImage(c.ref,{x:0,y:0,width:rSrcW,height:rSrcH});
+    } else if(isBack && flipAxis==='horizontal'){
+      const ox=-(srcBl-usrBl);
+      if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
+      else page.drawImage(c.ref,{x:ox,y:ox,width:srcW,height:srcH});
+    } else {
+      const ox=x-(srcBl-usrBl), oy=y-(srcBl-usrBl);
+      if(c.kind==='page') page.drawPage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+      else page.drawImage(c.ref,{x:ox,y:oy,width:srcW,height:srcH});
+    }
+  }
+  page.pushOperators(PDFLib.popGraphicsState());
+}
+
+function placeMarks(page,s,Wp,Hp,font,si,sideLabel,opts){
+  const black=PDFLib.cmyk(0,0,0,1);
+  const doSlug=!(opts&&opts.skipSlug)&&el('includeSlug').checked;
+  const doHickeys=!(opts&&opts.skipHickeys)&&el('includeHickeys').checked;
+  const artBounds=opts&&opts.artBounds;
+  const mPts=s.margin*PTS;
+
+  // Reg dots — respect die/reg side selector for double-sided
+  const regDotsSide=s.doubleSided?el('regDotsSideSel').value:'face';
+  const wantRegDots=!(opts&&opts.skipRegDots)&&el('regDotsChk')&&el('regDotsChk').checked;
+  const regOnThisSide=regDotsSide==='both'||(sideLabel==='Back'&&regDotsSide==='back')||(sideLabel!=='Back'&&regDotsSide==='face')||(sideLabel==='OPW');
+  if(wantRegDots&&regOnThisSide){
+    const dots=getRegDots(s.stockW,s.stockH,artBounds);
+    if(sideLabel==='Back'){
+      // Mirror dot positions along flip axis for back side
+      for(const d of dots){
+        let mx,my;
+        if(s.flipAxis==='horizontal'){
+          mx=d.x; my=s.stockH-d.y;
+        } else {
+          mx=s.stockW-d.x; my=d.y;
+        }
+        page.drawCircle({x:mx*PTS,y:Hp-my*PTS,size:REG_R,color:black});
+      }
+    } else {
+      for(const d of dots) page.drawCircle({x:d.x*PTS,y:Hp-d.y*PTS,size:REG_R,color:black});
+    }
+  }
+
+  // Slug is drawn OUTSIDE the hickey clip — it goes near the art group, not in the margin strip
+  if(doSlug){
+    // Slug text at 24pt, centered below art group (1/4" down, clear of corner dots)
+    const slugSize=24;
+    if(artBounds){
+      const slugCenterX=artBounds.x*PTS + artBounds.w*PTS/2;
+      const slugY=Hp-(artBounds.y2+0.25)*PTS-slugSize;
+      const slugText=buildSlug(s,si,sideLabel);
+      const slugWidth=font.widthOfTextAtSize(slugText,slugSize);
+      page.drawText(slugText,{x:slugCenterX-slugWidth/2,y:slugY,size:slugSize,font,color:black});
+    } else {
+      page.drawText(buildSlug(s,si,sideLabel),{x:4.0*PTS,y:Hp-mPts*0.65,size:slugSize,font,color:black});
+    }
+  }
+
+  // Hickeys are clipped to the margin strip (outside content+bleed area)
+  // Using even-odd rule: full page rect + inner content rect = margin strip only
+  const innerX=mPts, innerY=mPts, innerW=Wp-2*mPts, innerH=Hp-2*mPts;
+  page.pushOperators(PDFLib.pushGraphicsState());
+  page.pushOperators(
+    PDFLib.rectangle(0,0,Wp,Hp),
+    PDFLib.rectangle(innerX,innerY,innerW,innerH),
+    PDFLib.PDFOperator.of('W*'),
+    PDFLib.endPath()
+  );
+  if(doHickeys){
+    for(const h of getHickeys(s.stockW,s.stockH)){
+      page.drawSvgPath(`M ${(h.x1*PTS).toFixed(1)} ${(h.y1*PTS).toFixed(1)} L ${(h.x2*PTS).toFixed(1)} ${(h.y2*PTS).toFixed(1)} L ${(h.x3*PTS).toFixed(1)} ${(h.y3*PTS).toFixed(1)} Z`,{x:0,y:Hp,color:black});
+    }
+  }
+  if(s.doubleSided){
+    const ax=(s.stockW-s.margin-0.5)*PTS,ay=0.45*PTS-5,sh=16,hw=5,hl=8;
+    if(s.flipAxis==='horizontal'){
+      page.drawSvgPath(`M ${ax} ${ay-sh} L ${ax} ${ay+sh}`,{x:0,y:Hp,borderColor:black,borderWidth:2});
+      page.drawSvgPath(`M ${ax} ${ay+sh+hl} L ${ax-hw} ${ay+sh} L ${ax+hw} ${ay+sh} Z`,{x:0,y:Hp,color:black});
+      page.drawSvgPath(`M ${ax} ${ay-sh-hl} L ${ax-hw} ${ay-sh} L ${ax+hw} ${ay-sh} Z`,{x:0,y:Hp,color:black});
+    }else{
+      page.drawSvgPath(`M ${ax-sh} ${ay} L ${ax+sh} ${ay}`,{x:0,y:Hp,borderColor:black,borderWidth:2});
+      page.drawSvgPath(`M ${ax+sh+hl} ${ay} L ${ax+sh} ${ay+hw} L ${ax+sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
+      page.drawSvgPath(`M ${ax-sh-hl} ${ay} L ${ax-sh} ${ay+hw} L ${ax-sh} ${ay-hw} Z`,{x:0,y:Hp,color:black});
+    }
+  }
+  page.pushOperators(PDFLib.popGraphicsState());
+}
+
+/* === EXPORT OPW PDF === */
+async function exportOPWPDF(){
+  const btn=el('opwBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+    // Embed OPW sources — keyed by fileId-pageIndex, same as process
+    const opwCache=new Map();
+    for(const f of inputFiles)for(const p of f.pages){
+      if(!p.opw)continue;
+      const key=`${f.id}-${p.index}`;
+      if(p.opw.type==='pdf'){
+        const sd=await PDFLib.PDFDocument.load(p.opw.bytes,{ignoreEncryption:true});
+        const opwPageIdx=p.opw.pageIndex||0;
+        const[e]=await outDoc.embedPages([sd.getPages()[opwPageIdx]]);
+        opwCache.set(key,{ref:e,kind:'page'});
+      }else{
+        let e;
+        if(p.opw.mimeType==='image/jpeg'||p.opw.mimeType==='image/jpg')e=await outDoc.embedJpg(p.opw.bytes);
+        else e=await outDoc.embedPng(p.opw.bytes);
+        opwCache.set(key,{ref:e,kind:'image'});
+      }
+    }
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const pg=outDoc.addPage([Wp,Hp]);
+
+      // Place OPW plates at identical positions to process file
+      for(const p of sheet.placements){
+        const key=`${p.fileId}-${p.pageIndex}`;
+        const c=opwCache.get(key);
+        if(!c)continue;
+        const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+        drawItem(pg,c,x,y,p,Wp,Hp);
+      }
+
+      // Same marks as process sheet (reg dots, hickeys, slug)
+      const ab=getArtGroupBounds(sheet,s.margin);
+      placeMarks(pg,s,Wp,Hp,fontB,si,'OPW',{artBounds:ab});
+    }
+
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_OPW.pdf');
+  }catch(err){alert('OPW export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download OPW PDF';
+}
+
+/* === EXPORT CUT PDF === */
+function exportCutPDF(){
+  const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+  const sd=sheets.map((sheet,sheetIndex)=>{
+    const cuts=[];
+    for(const p of sheet.placements){
+      const posX=(s.margin+p.x)*PTS;
+      const posY=Hp-(s.margin+p.y+p.h)*PTS;
+      const pw=p.w*PTS, ph=p.h*PTS;
+      if(p.diePaths){
+        // Use extracted die line paths, translated to imposed position
+        // Source coords are in the page's own coordinate system (bottom-left origin)
+        // When the piece is rotated, rotate die path coords to match
+        const srcW=p.diePaths.pageW, srcH=p.diePaths.pageH;
+        let effSrcW=srcW, effSrcH=srcH;
+        if(p.rotated){ effSrcW=srcH; effSrcH=srcW; }
+        const scaleX=pw/effSrcW, scaleY=ph/effSrcH;
+        for(const path of p.diePaths.paths){
+          const translated=translateDiePath(path, posX, posY, scaleX, scaleY, effSrcH, ph, p.rotated, srcW);
+          cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY)});
+        }
+      } else {
+        // Fall back to rectangular cut from trim or full image edge
+        const srcBl = (p.srcBleed !== undefined ? p.srcBleed : p.bleed);
+        const hasSrcBleed = srcBl > 0.001;
+        let cutX, cutY, cutW, cutH;
+        if(hasSrcBleed){
+          cutX=(s.margin+p.x+p.bleed)*PTS;
+          cutY=Hp-(s.margin+p.y+p.bleed+p.trimH)*PTS;
+          cutW=p.trimW*PTS; cutH=p.trimH*PTS;
+        } else {
+          cutX=(s.margin+p.x)*PTS;
+          cutY=Hp-(s.margin+p.y+p.h)*PTS;
+          cutW=p.w*PTS; cutH=p.h*PTS;
+        }
+        // Apply inset — move cut inward
+        const inset = s.inset || 0;
+        if(inset > 0){
+          cutX += inset * PTS;
+          cutY += inset * PTS;
+          cutW -= 2 * inset * PTS;
+          cutH -= 2 * inset * PTS;
+        }
+        if(cutW > 0 && cutH > 0)
+        cuts.push({type:'rect', x:cutX, y:cutY, w:cutW, h:cutH});
+      }
+    }
+    const ab=getArtGroupBounds(sheet,s.margin);
+    const dots=getRegDots(s.stockW,s.stockH,ab).map(d=>({cx:d.x*PTS,cy:Hp-d.y*PTS}));
+    // Shift one reg dot per sheet to prevent wrong cut file usage.
+    // Move the second dot (top-left area) by sheetIndex * 1.5" along X.
+    // Each sheet's cut file has a uniquely positioned dot pattern.
+    if(dots.length>1){
+      dots[1].cx += sheetIndex * 1.5 * PTS;
+    }
+    return{cuts,dots};
+  });
+  download(buildCutPDF(sd,Wp,Hp),fileName(s)+'_Cut.pdf');
+}
+
+function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, rotated, origSrcW){
+  // Transform path ops from source page coords to imposed position
+  // Source: bottom-left origin, coords relative to page
+  // Destination: bottom-left origin, offset by (offsetX, offsetY)
+  // When rotated: apply 90° CW rotation (x,y) → (y, origSrcW - x) before scaling
+  const ops = [];
+  let cmTx=0, cmTy=0; // current transform offset from cm operators
+  let curX=0, curY=0; // current point (for v/y shorthand expansion)
+  
+  function tx(x,y){
+    let rx=x+cmTx, ry=y+cmTy;
+    if(rotated){
+      const tmp=rx; rx=ry; ry=origSrcW-tmp;
+    }
+    return { x: rx*scaleX+offsetX, y: ry*scaleY+offsetY };
+  }
+  
+  for(const op of path.ops){
+    if(op.op==='cm'){
+      cmTx=op.e; cmTy=op.f;
+      continue;
+    }
+    if(op.op==='m'){
+      const t=tx(op.x,op.y);
+      curX=op.x; curY=op.y;
+      ops.push({op:'m', x:t.x, y:t.y});
+    } else if(op.op==='l'){
+      const t=tx(op.x,op.y);
+      curX=op.x; curY=op.y;
+      ops.push({op:'l', x:t.x, y:t.y});
+    } else if(op.op==='c'){
+      const t1=tx(op.x1,op.y1), t2=tx(op.x2,op.y2), t3=tx(op.x3,op.y3);
+      curX=op.x3; curY=op.y3;
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+    } else if(op.op==='v'){
+      // v: x2 y2 x3 y3 v → cp1=current, cp2=(x2,y2), end=(x3,y3)
+      const t1=tx(curX, curY), t2=tx(op.x2, op.y2), t3=tx(op.x3, op.y3);
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+      curX=op.x3; curY=op.y3;
+    } else if(op.op==='y'){
+      // y: x1 y1 x3 y3 y → cp1=(x1,y1), cp2=(x3,y3), end=(x3,y3)
+      const t1=tx(op.x1, op.y1), t2=tx(op.x3, op.y3), t3=tx(op.x3, op.y3);
+      ops.push({op:'c', x1:t1.x,y1:t1.y, x2:t2.x,y2:t2.y, x3:t3.x,y3:t3.y});
+      curX=op.x3; curY=op.y3;
+    } else if(op.op==='h'){
+      ops.push({op:'h'});
+    } else if(op.op==='re'){
+      if(rotated){
+        const p1=tx(op.x,op.y), p2=tx(op.x+op.w,op.y), p3=tx(op.x+op.w,op.y+op.h), p4=tx(op.x,op.y+op.h);
+        ops.push({op:'m',x:p1.x,y:p1.y},{op:'l',x:p2.x,y:p2.y},{op:'l',x:p3.x,y:p3.y},{op:'l',x:p4.x,y:p4.y},{op:'h'});
+      } else {
+        ops.push({op:'re', x:(op.x+cmTx)*scaleX+offsetX, y:(op.y+cmTy)*scaleY+offsetY,
+          w:op.w*scaleX, h:op.h*scaleY});
+      }
+    }
+  }
+  return {ops};
+}
+
+function buildCutPDF(sd,W,H){
+  const R=REG_R,K=KAPPA,n=sd.length,f=v=>v.toFixed(4);
+  const dieName = spotColorConfig.generatedDieName || 'CutContour';
+  const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+  function circ(cx,cy,r){return`${f(cx+r)} ${f(cy)} m ${f(cx+r)} ${f(cy+r*K)} ${f(cx+r*K)} ${f(cy+r)} ${f(cx)} ${f(cy+r)} c ${f(cx-r*K)} ${f(cy+r)} ${f(cx-r)} ${f(cy+r*K)} ${f(cx-r)} ${f(cy)} c ${f(cx-r)} ${f(cy-r*K)} ${f(cx-r*K)} ${f(cy-r)} ${f(cx)} ${f(cy-r)} c ${f(cx+r*K)} ${f(cy-r)} ${f(cx+r)} ${f(cy-r*K)} ${f(cx+r)} ${f(cy)} c f\n`;}
+  const tot=3+2*n,pids=[];for(let i=0;i<n;i++)pids.push(5+2*i);
+  let pdf='%PDF-1.4\n';const offs=[];
+  function wo(id,b){offs[id-1]=pdf.length;pdf+=`${id} 0 obj\n${b}\nendobj\n`;}
+  wo(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  wo(2,`<< /Type /Pages /Kids [${pids.map(i=>i+' 0 R').join(' ')}] /Count ${n} >>`);
+  wo(3,`[/Separation /${dieName} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${dieCmyk.join(' ')}] /N 1 >>]`);
+  for(let i=0;i<n;i++){
+    const sh=sd[i];let s=`/${dieName} CS\n1 SCN\n2.835 w\n`;
+    for(const c of sh.cuts){
+      if(c.type==='rect'){
+        s+=`${f(c.x)} ${f(c.y)} ${f(c.w)} ${f(c.h)} re S\n`;
+      } else if(c.type==='path'){
+        // Set the extracted path's line width
+        s+=`${f(c.width||2.835)} w\n`;
+        for(const op of c.ops){
+          if(op.op==='m') s+=`${f(op.x)} ${f(op.y)} m\n`;
+          else if(op.op==='l') s+=`${f(op.x)} ${f(op.y)} l\n`;
+          else if(op.op==='c') s+=`${f(op.x1)} ${f(op.y1)} ${f(op.x2)} ${f(op.y2)} ${f(op.x3)} ${f(op.y3)} c\n`;
+          else if(op.op==='h') s+='h\n';
+          else if(op.op==='re') s+=`${f(op.x)} ${f(op.y)} ${f(op.w)} ${f(op.h)} re\n`;
+        }
+        s+='S\n';
+      }
+    }
+    s+='0 0 0 1 k\n';for(const d of sh.dots)s+=circ(d.cx,d.cy,R);
+    const sid=4+2*i,pid=5+2*i;
+    wo(sid,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
+    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << /${dieName} 3 0 R >> >> >>`);
+  }
+  const xo=pdf.length;pdf+=`xref\n0 ${tot+1}\n0000000000 65535 f \n`;
+  for(let i=0;i<tot;i++)pdf+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
+  pdf+=`trailer\n<< /Size ${tot+1} /Root 1 0 R >>\nstartxref\n${xo}\n%%EOF`;
+  const b=new Uint8Array(pdf.length);for(let i=0;i<pdf.length;i++)b[i]=pdf.charCodeAt(i);return b;
+}
+
+/* === EXPORT PRINT+DIE PDF === */
+async function exportPrintDiePDF(){
+  const btn=el('printDieBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S(),Wp=s.stockW*PTS,Hp=s.stockH*PTS;
+    const markOpts=el('regDotsChk').checked?{}:{skipRegDots:true};
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+    const dieSide=s.doubleSided?el('dieSideSel').value:'face';
+
+    // Strategy: embed STRIPPED source for both face and back (clean print).
+    // Then embed UNSTRIPPED source as a separate die-overlay XObject, drawn
+    // on top of the die-side page only. This avoids pdf-lib buffer conflicts.
+    const cache=new Map();
+    const dieOverlay=new Map(); // fileId-pageIdx → {ref, kind:'page'} for unstripped source
+    const used=new Set();
+    for(const sh of sheets)for(const p of sh.placements){used.add(`${p.fileId}-${p.pageIndex}`);const bk=findBackSource(p);if(bk&&!bk.common)used.add(`${bk.fileId}-${bk.pageIndex}`);}
+
+    for(const f of inputFiles){
+      const pis=[];for(const p of f.pages)if(used.has(`${f.id}-${p.index}`))pis.push(p.index);if(!pis.length)continue;
+      if(f.type==='pdf'){
+        // Check if this file has die paths
+        const dieCSNames = [];
+        const dieCSCmyk = {};
+        for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
+        for(const pi of pis){const pg=f.pages[pi];if(!pg||!pg.spotColors)continue;for(const sc of pg.spotColors){if(spotColorConfig.dieSpotNames.has(sc.spotName)){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk||[0,1,0,0];}}}
+
+        const hasDie = dieCSNames.length > 0;
+        // Only strip die when double-sided (need clean print on non-die side).
+        // Single-sided: use original source with die embedded — it stays in the XObject.
+        const needStrip = hasDie && s.doubleSided;
+
+        let sd;
+        if(needStrip){
+          const stripResult=await stripDieFromPdfDoc(f.bytes.slice(0),dieCSNames,dieCSCmyk);
+          sd = stripResult
+            ? await PDFLib.PDFDocument.load(stripResult.bytes,{ignoreEncryption:true})
+            : await PDFLib.PDFDocument.load(f.bytes.slice(0),{ignoreEncryption:true});
+        } else {
+          sd=await PDFLib.PDFDocument.load(f.bytes.slice(0),{ignoreEncryption:true});
+        }
+        for(const pi of pis){const[e]=await outDoc.embedPages([sd.getPages()[pi]]);cache.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+
+        // If file has die AND double-sided, also embed a DIE-ONLY version as overlay
+        if(hasDie && s.doubleSided){
+          const dieOnlyBytes = await extractDieOnlyFromPdfDoc(f.bytes.slice(0), dieCSNames);
+          if(dieOnlyBytes){
+            const sdDie=await PDFLib.PDFDocument.load(dieOnlyBytes,{ignoreEncryption:true});
+            for(const pi of pis){const[e]=await outDoc.embedPages([sdDie.getPages()[pi]]);dieOverlay.set(`${f.id}-${pi}`,{ref:e,kind:'page'});}
+          }
+        }
+      } else {
+        let e;if(f.mimeType==='image/jpeg'||f.mimeType==='image/jpg')e=await outDoc.embedJpg(f.bytes);else e=await outDoc.embedPng(f.bytes);
+        cache.set(`${f.id}-0`,{ref:e,kind:'image'});
+      }
+    }
+
+    let commonEmbed=null;
+    if(s.doubleSided&&s.dblMode==='common'&&commonBackData){
+      if(commonBackData.type==='pdf'){const sd=await PDFLib.PDFDocument.load(commonBackData.bytes,{ignoreEncryption:true});const[e]=await outDoc.embedPages([sd.getPages()[0]]);commonEmbed={ref:e,kind:'page'};}
+      else{let e;if(commonBackData.mimeType==='image/jpeg')e=await outDoc.embedJpg(commonBackData.bytes);else e=await outDoc.embedPng(commonBackData.bytes);commonEmbed={ref:e,kind:'image'};}
+    }
+
+    // Create the Separation color space for generated die lines
+    const dieName = spotColorConfig.generatedDieName || 'CutContour';
+    const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+    const sepArray = outDoc.context.obj([
+      PDFLib.PDFName.of('Separation'),
+      PDFLib.PDFName.of(dieName),
+      PDFLib.PDFName.of('DeviceCMYK'),
+      outDoc.context.obj({
+        FunctionType: 2, Domain: [0,1],
+        C0: [0,0,0,0],
+        C1: dieCmyk,
+        N: 1
+      })
+    ]);
+    const csRef = outDoc.context.register(sepArray);
+    const csAlias = 'SpotDie';
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const ab=getArtGroupBounds(sheet,s.margin);
+      const marksWithArt=Object.assign({artBounds:ab},markOpts);
+
+      // --- FACE PAGE ---
+      const fp=outDoc.addPage([Wp,Hp]);
+      placeContent(fp,sheet,cache,commonEmbed,s,Wp,Hp,'face');
+      placeMarks(fp,s,Wp,Hp,fontB,si,'Face',marksWithArt);
+      if(dieSide==='face'||dieSide==='both'){
+        placeDieOverlay(fp,sheet,dieOverlay,s,Wp,Hp,'face');
+        addDieLinesToPage(fp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'face',s.flipAxis);
+      }
+
+      // --- BACK PAGE ---
+      if(s.doubleSided){
+        let needsBack=true;
+        if(s.dblMode==='same') needsBack=true;
+        if(needsBack){
+          const bp=outDoc.addPage([Wp,Hp]);
+          placeContent(bp,sheet,cache,commonEmbed,s,Wp,Hp,'back');
+          placeMarks(bp,s,Wp,Hp,fontB,si,'Back',marksWithArt);
+          if(dieSide==='back'||dieSide==='both'){
+            placeDieOverlay(bp,sheet,dieOverlay,s,Wp,Hp,'back');
+            addDieLinesToPage(bp,outDoc,sheet,s,Wp,Hp,csRef,csAlias,dieName,'back',s.flipAxis);
+          }
+        }
+      }
+    }
+    download(await outDoc.save({ useObjectStreams: false }),fileName(s)+'_PrintDie.pdf');
+  }catch(err){alert('Print+Die export failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='Download Print+Die PDF';
+}
+
+/* Place die overlay: draw the die-only version of the source on top of the content.
+   The stripped page is already drawn (clean print). This overlays ONLY the die
+   spot color content — CMYK art is removed so it doesn't cover the back art. */
+function placeDieOverlay(page,sheet,dieOverlay,s,Wp,Hp,side){
+  if(!dieOverlay.size) return;
+  for(const p of sheet.placements){
+    const key=`${p.fileId}-${p.pageIndex}`;
+    const c=dieOverlay.get(key);
+    if(!c) continue; // no die overlay for this file (images, PDFs without die)
+    // Draw at the same position as the content, using drawItem
+    if(side==='face'){
+      const x=(s.margin+p.x)*PTS,y=Hp-(s.margin+p.y+p.h)*PTS;
+      drawItem(page,c,x,y,p,Wp,Hp);
+    } else {
+      let bx,by;
+      if(s.flipAxis==='horizontal'){
+        bx=(s.margin+p.x)*PTS;
+        by=(s.margin+p.y)*PTS;
+      } else {
+        bx=Wp-(s.margin+p.x+p.w)*PTS;
+        by=Hp-(s.margin+p.y+p.h)*PTS;
+      }
+      drawItem(page,c,bx,by,p,Wp,Hp,false,true,s.flipAxis);
+    }
+  }
+}
+
+function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieName, side, flipAxis){
+  side = side || 'face';
+  flipAxis = flipAxis || 'horizontal';
+  // Add spot color to page resources
+  const pageDict = page.node;
+  let resources = pageDict.get(PDFLib.PDFName.of('Resources'));
+  if(resources instanceof PDFLib.PDFRef) resources = outDoc.context.lookup(resources);
+  let csDict = resources.get(PDFLib.PDFName.of('ColorSpace'));
+  if(!csDict){
+    csDict = outDoc.context.obj({});
+    resources.set(PDFLib.PDFName.of('ColorSpace'), csDict);
+  } else if(csDict instanceof PDFLib.PDFRef){
+    csDict = outDoc.context.lookup(csDict);
+  }
+  csDict.set(PDFLib.PDFName.of(csAlias), csRef);
+
+  const inset = s.inset || 0;
+  let cutOps = '';
+
+  // For the back side, we mirror the ENTIRE sheet along the flip axis.
+  // This mirrors both die positions AND die shapes in one operation.
+  // So we build all die ops using FACE coordinates, then wrap the whole
+  // thing in a mirror CTM for the back.
+  if(side === 'back'){
+    if(flipAxis === 'horizontal'){
+      cutOps += `q 1 0 0 -1 0 ${Hp.toFixed(4)} cm\n`;
+    } else {
+      cutOps += `q -1 0 0 1 ${Wp.toFixed(4)} 0 cm\n`;
+    }
+  }
+
+  for(const p of sheet.placements){
+    // Die position in FACE coordinates (bottom-left origin)
+    // Die is at TRIM box — the original input size, not the enlarged bleed box
+    let dieX, dieY, dieW, dieH;
+    // Die at TRIM position — cut line is at original file size, not enlarged bleed box
+    dieX = (s.margin + p.x + p.bleed) * PTS;
+    dieY = Hp - (s.margin + p.y + p.bleed + p.trimH) * PTS;
+    dieW = p.trimW * PTS;
+    dieH = p.trimH * PTS;
+    if(inset > 0){
+      dieX += inset * PTS;
+      dieY += inset * PTS;
+      dieW -= 2 * inset * PTS;
+      dieH -= 2 * inset * PTS;
+    }
+
+    if(p.diePaths && p.diePaths.paths && p.diePaths.paths.length){
+      // File has die paths (embedded or extracted) — the unstripped source XObject
+      // already contains them, so skip generating an overlay die.
+      continue;
+    }
+    // No extracted die paths (or marker) — rectangle die in face coords
+    if(dieW > 0 && dieH > 0)
+      cutOps += `q /${csAlias} CS 1 SCN 2.835 w ${dieX.toFixed(4)} ${dieY.toFixed(4)} ${dieW.toFixed(4)} ${dieH.toFixed(4)} re S Q\n`;
+  }
+
+  // Close the mirror CTM for back side
+  if(side === 'back') cutOps += 'Q\n';
+  if(!cutOps || cutOps === 'Q\n') return;
+
+  // Append as new content stream
+  const streamBytes = new TextEncoder().encode(cutOps);
+  const stream = outDoc.context.stream(streamBytes);
+  const streamRef = outDoc.context.register(stream);
+  let contents = pageDict.get(PDFLib.PDFName.of('Contents'));
+  if(contents instanceof PDFLib.PDFRef){
+    const arr = outDoc.context.obj([contents]);
+    pageDict.set(PDFLib.PDFName.of('Contents'), arr);
+    contents = arr;
+  }
+  if(contents instanceof PDFLib.PDFArray){
+    contents.push(streamRef);
+  }
+}
+
+/* === PRESS PREVIEW (8.5×14 low-rez for pressmen) === */
+
+// Render a source file page to a small canvas thumbnail (for press preview)
+// Uses pdf.js for PDFs, Image for rasters — same approach as Banner tool.
+const _thumbCache = new Map(); // key: "fileId-pageIndex" -> canvas
+async function getThumb(fileId, pageIndex, maxPx){
+  const key = `${fileId}-${pageIndex}`;
+  if(_thumbCache.has(key)) return _thumbCache.get(key);
+  const f = inputFiles.find(f => f.id === fileId);
+  if(!f) return null;
+  let canvas = null;
+  if(f.type === 'pdf' && pdfjsLib){
+    // Copy bytes before pdf.js detaches the ArrayBuffer
+    const rawCopy = new Uint8Array(f.bytes.slice(0));
+    const doc = await pdfjsLib.getDocument({ data: rawCopy }).promise;
+    const page = await doc.getPage(pageIndex + 1);
+    const vp0 = page.getViewport({ scale: 1 });
+    let scale = Math.min(maxPx / Math.max(vp0.width, vp0.height), 4);
+    const vp = page.getViewport({ scale });
+    canvas = document.createElement('canvas');
+    canvas.width = Math.round(vp.width);
+    canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  } else if(f.type === 'pdf'){
+    // pdf.js not loaded yet — can't render, return blank
+    return null;
+  } else {
+    // Raster image — decode and draw to canvas
+    const blob = new Blob([f.bytes], { type: f.mimeType || 'image/png' });
+    const url = URL.createObjectURL(blob);
+    const img = await new Promise((res, rej) => {
+      const el = new Image();
+      el.onload = () => { URL.revokeObjectURL(url); res(el); };
+      el.onerror = () => { URL.revokeObjectURL(url); rej(new Error('decode failed')); };
+      el.src = url;
+    });
+    const scale = Math.min(maxPx / Math.max(img.naturalWidth, img.naturalHeight), 1);
+    canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  }
+  _thumbCache.set(key, canvas);
+  return canvas;
+}
+
+async function exportPressPreview(){
+  const btn=el('pressPreviewBtn');btn.disabled=true;btn.textContent='Building...';
+  try{
+    const s=S();
+    const outDoc=await PDFLib.PDFDocument.create();
+    if(slugFontBytes && typeof fontkit!=='undefined') outDoc.registerFontkit(fontkit);
+    const fontB = slugFontBytes
+      ? await outDoc.embedFont(slugFontBytes, {subset:true})
+      : await outDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+
+    // Legal size: 8.5 x 14 inches
+    const PW=8.5*PTS, PH=14*PTS;
+    const sMargin=0.375*PTS; // 3/8" page margin
+    const availW=PW-2*sMargin, availH=PH-2*sMargin;
+
+    // Pre-render thumbnails for all placements on all sheets
+    const thumbPx = 600; // max dimension for source thumbnails
+    const thumbMap = new Map();
+    for(const sheet of sheets){
+      for(const p of sheet.placements){
+        const key = `${p.fileId}-${p.pageIndex}`;
+        if(!thumbMap.has(key)){
+          const thumb = await getThumb(p.fileId, p.pageIndex, thumbPx);
+          if(thumb) thumbMap.set(key, thumb);
+        }
+      }
+    }
+
+    for(let si=0;si<sheets.length;si++){
+      const sheet=sheets[si];
+      const artBounds=getArtGroupBounds(sheet,s.margin);
+
+      // Cap canvas at ~4000px on the long side — same approach as Banner tool.
+      const MAX_PX=4000;
+      const dpi=Math.min(MAX_PX/s.stockW, MAX_PX/s.stockH);
+      const cw=Math.ceil(s.stockW*dpi);
+      const ch=Math.ceil(s.stockH*dpi);
+      const c=document.createElement('canvas');
+      c.width=cw;c.height=ch;
+      const ctx=c.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,cw,ch);
+      const D=dpi;
+
+      // Draw sheet content (placements) — render actual artwork thumbnails
+      for(const p of sheet.placements){
+        const px=s.margin+p.x, py=s.margin+p.y;
+        const x=px*D, y=py*D, w=p.w*D, h=p.h*D;
+
+        // Draw the source artwork into the placement rect
+        const thumb = thumbMap.get(`${p.fileId}-${p.pageIndex}`);
+        if(thumb){
+          // Clip to the placement rect and draw the thumbnail scaled to fit
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y, w, h);
+          ctx.clip();
+          // Scale thumb to cover the placement rect (same aspect as source)
+          const srcW = (p.srcW||p.w) * D;
+          const srcH = (p.srcH||p.h) * D;
+          const srcBl = (p.srcBleed||p.bleed||0) * D;
+          const usrBl = (p.bleed||0) * D;
+          // Offset to align trim: source bleed extends beyond trim on each side
+          const ox = x - (srcBl - usrBl);
+          const oy = y - (srcBl - usrBl);
+          if(p.rotated){
+            // Rotated 90° — swap W/H
+            ctx.translate(x + w, y);
+            ctx.rotate(Math.PI/2);
+            ctx.drawImage(thumb, 0, 0, srcH, srcW);
+          } else {
+            ctx.drawImage(thumb, ox, oy, srcW, srcH);
+          }
+          ctx.restore();
+        } else {
+          // No thumbnail available — light blue fill
+          ctx.fillStyle='#dbeafe';ctx.fillRect(x,y,w,h);
+        }
+
+        // Bleed rect (if any) — orange dashed
+        if(p.bleed>0){
+          ctx.strokeStyle='#f59e0b';ctx.lineWidth=Math.max(2,w/400);
+          ctx.setLineDash([6,4]);
+          ctx.strokeRect(x+p.bleed*D, y+p.bleed*D,
+            p.trimW*D, p.trimH*D);
+          ctx.setLineDash([]);
+        }
+        // Trim rect — thick blue
+        ctx.strokeStyle='#2563eb';ctx.lineWidth=Math.max(3,w/200);
+        ctx.strokeRect(x,y,w,h);
+        // Label — sized to the placement box
+        ctx.fillStyle='#1e3a5f';ctx.font=`bold ${Math.max(10,Math.min(28,w/8))}px sans-serif`;
+        ctx.textAlign='center';ctx.textBaseline='top';
+        let lbl=p.label;if(lbl&&lbl.length>30)lbl=lbl.substring(0,28)+'...';
+        // Draw label at top of placement
+        ctx.fillText(lbl,x+4,y+4);
+        // Size label
+        ctx.fillStyle='#64748b';ctx.font=`${Math.max(8,Math.min(16,w/12))}px sans-serif`;
+        ctx.fillText(`${p.trimW.toFixed(1)}"x${p.trimH.toFixed(1)}"`,x+w/2,y+h-Math.max(16,w/8));
+      }
+
+      // Draw stock outline (margin box)
+      ctx.strokeStyle='#cbd5e1';ctx.setLineDash([8,6]);ctx.lineWidth=1.5;
+      ctx.strokeRect(s.margin*D,s.margin*D,
+        (s.stockW-2*s.margin)*D,(s.stockH-2*s.margin)*D);
+      ctx.setLineDash([]);
+
+      // Stock border — thick
+      ctx.strokeStyle='#475569';ctx.lineWidth=3;
+      ctx.strokeRect(0,0,cw,ch);
+
+      // Reg dots — sized to canvas
+      ctx.fillStyle='#1d1d1f';
+      for(const d of getRegDots(s.stockW,s.stockH,artBounds)){
+        ctx.beginPath();ctx.arc(d.x*D,d.y*D,Math.max(3,dpi/24),0,Math.PI*2);ctx.fill();
+      }
+
+      // Hickeys
+      ctx.fillStyle='#1d1d1f';
+      for(const h of getHickeys(s.stockW,s.stockH)){
+        ctx.beginPath();
+        ctx.moveTo(h.x1*D,h.y1*D);
+        ctx.lineTo(h.x2*D,h.y2*D);
+        ctx.lineTo(h.x3*D,h.y3*D);
+        ctx.closePath();ctx.fill();
+      }
+
+      // Slug on canvas — below art group
+      const slugText=buildSlug(s,si,'Face');
+      ctx.fillStyle='#000';ctx.font=`bold ${Math.max(12,D/6)}px sans-serif`;
+      ctx.textAlign='center';ctx.textBaseline='top';
+      const slugY=(artBounds.y2+0.25)*D;
+      const slugCx=(artBounds.x+artBounds.w/2)*D;
+      ctx.fillText(slugText,slugCx,slugY);
+
+      // --- Convert canvas to JPEG bytes (same as Banner tool canvasToJpegBytes) ---
+      const dataUrl=c.toDataURL('image/jpeg',0.92);
+      const bin=atob(dataUrl.split(',')[1]);
+      const jpegArr=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++)jpegArr[i]=bin.charCodeAt(i);
+      const img=await outDoc.embedJpg(jpegArr);
+
+      // --- Place on 8.5x14 page — orient to maximize paper usage ---
+      const sheetAspect=s.stockW/s.stockH;
+      // Try both portrait (PW×PH) and landscape (PH×PW) page orientations
+      const fitPortrait=(()=>{
+        const a=availW/availH;
+        let dw,dh;
+        if(sheetAspect>a){dw=availW;dh=availW/sheetAspect;}
+        else{dh=availH;dw=availH*sheetAspect;}
+        return {dw,dh,area:dw*dh,rotated:false,pw:PW,ph:PH};
+      })();
+      const fitLandscape=(()=>{
+        const lAvailW=availH, lAvailH=availW; // swap available dims
+        const a=lAvailW/lAvailH;
+        let dw,dh;
+        if(sheetAspect>a){dw=lAvailW;dh=lAvailW/sheetAspect;}
+        else{dh=lAvailH;dw=lAvailH*sheetAspect;}
+        return {dw,dh,area:dw*dh,rotated:true,pw:PH,ph:PW};
+      })();
+      const fit=fitLandscape.area>fitPortrait.area?fitLandscape:fitPortrait;
+
+      const page=outDoc.addPage([fit.pw,fit.ph]);
+      const dx=(fit.pw-fit.dw)/2, dy=(fit.ph-fit.dh)/2;
+      page.drawImage(img,{x:dx,y:dy,width:fit.dw,height:fit.dh});
+
+      // Slug info at top of page
+      const slugSize=7;
+      const topMargin=0.25*PTS;
+      const slugParts=[];
+      if(s.jobName) slugParts.push(s.jobName);
+      if(s.jobNumber) slugParts.push('#'+s.jobNumber);
+      if(s.stockName) slugParts.push(s.stockName);
+      slugParts.push(`${s.stockW}"x${s.stockH}"`);
+      if(s.scalePercent && s.scalePercent!==100) slugParts.push(`Scale ${s.scalePercent}%`);
+      if(s.doubleSided){
+        const isLandscape=s.stockW>s.stockH;
+        const isTumble=isLandscape?(s.flipAxis==='vertical'):(s.flipAxis==='horizontal');
+        slugParts.push(`Double-sided ${isTumble?'Tumble':'Turn'}`);
+      }
+      slugParts.push(`Print ${sheet.printQty||1}x`);
+      if(sheets.length>1) slugParts.push(`Sheet ${si+1} of ${sheets.length}`);
+      const fullSlug=slugParts.join('  |  ');
+
+      const slugW=fontB.widthOfTextAtSize(fullSlug,slugSize);
+      page.drawText(fullSlug,{x:(fit.pw-slugW)/2,y:fit.ph-topMargin-slugSize,size:slugSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+
+      // "PRESS PREVIEW — NOT FOR PRODUCTION" watermark at bottom
+      const wmSize=6;
+      const wmText='PRESS PREVIEW — NOT FOR PRODUCTION';
+      const wmW=fontB.widthOfTextAtSize(wmText,wmSize);
+      page.drawText(wmText,{x:(fit.pw-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+    }
+
+    const pdfBytes=await outDoc.save({useObjectStreams:false});
+    download(pdfBytes,fileName(s)+'_PressPreview.pdf');
+  }catch(err){alert('Press preview failed: '+err.message);console.error(err);}
+  btn.disabled=false;btn.textContent='⬇ Press Preview (8.5×14)';
+}
+
+function download(bytes,name){
+  const blob=new Blob([bytes],{type:'application/pdf'}),url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url);a.remove();},500);
+}
+
+el('arrangeBtn').addEventListener('click',arrangeLayout);
+el('printBtn').addEventListener('click',exportPrintPDF);
+el('printDieBtn').addEventListener('click',exportPrintDiePDF);
+el('opwBtn').addEventListener('click',exportOPWPDF);
+el('cutBtn').addEventListener('click',exportCutPDF);
+el('pressPreviewBtn').addEventListener('click',exportPressPreview);
+</script>
+</body>
+</html>
