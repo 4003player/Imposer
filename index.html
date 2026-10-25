@@ -2464,8 +2464,13 @@ function smartOrientLayout(){
       qty:p.qty||1,
     });
   }
-  // The pairs array is the unique set — qty is tracked per pair for printQty
-  const pairs=uniquePairs;
+  // Expand pairs by qty — each copy of a pair needs its own face+back cavity on the sheet
+  // Smart orient maximizes cavities per sheet, then uses printQty for the remainder
+  const expandedPairs=[];
+  for(const pair of uniquePairs){
+    for(let q=0;q<pair.qty;q++) expandedPairs.push({...pair, qty:1});
+  }
+  const pairs=expandedPairs;
 
   if(pairs.length<1){
     alert('Smart Orient needs at least 1 face/back pair.');return;
@@ -2483,8 +2488,7 @@ function smartOrientLayout(){
   const isRotated=refW>refH; // source is landscape, needs 90° rotation to become portrait
   const gut=s.gutter;
 
-  // The smart orient layout needs exactly 2× pieces (each pair = 1 face + 1 back on same side)
-  // Total cavities = pairs.length * 2 (face + back for each pair)
+  // Each pair = 2 cavities (1 face + 1 back on same sheet side)
   const totalCavities=pairs.length*2;
 
   // Find best grid within stock (content area = stock - 2*margin)
@@ -2492,6 +2496,7 @@ function smartOrientLayout(){
   const bl=pairs[0].bleed;
 
   // Try all even×even and even×odd grids
+  // We want the grid that fits the MOST cavities (up to totalCavities), minimizing leftover
   const candidates=[];
 
   function tryGrid(cols,rows,rotItems){
@@ -2503,7 +2508,8 @@ function smartOrientLayout(){
     const needH=rows*iTrimH+(rows-1)*gut;
     if(needW>cW+0.001||needH>cH+0.001)return;
     const capacity=cols*rows;
-    if(capacity<totalCavities)return;
+    // Grid must hold at least 2 cavities (1 pair)
+    if(capacity<2)return;
 
     const bothAxis=cols%2===0&&rows%2===0;
     const lrOnly=cols%2===0; // even cols, possibly odd rows
@@ -2513,11 +2519,17 @@ function smartOrientLayout(){
     let flipMode;
     if(bothAxis) flipMode='both';
     else if(lrOnly) flipMode='lr';
-    else return; // shouldn't happen since we filter odd cols above
+    else return;
 
-    const waste=1-(totalCavities*iTrimW*iTrimH)/(cW*cH);
-    const extraCavities=capacity-totalCavities;
-    candidates.push({cols,rows,rotItems,iW,iH,iTrimW,iTrimH,capacity,flipMode,waste,extraCavities,needW,needH});
+    // How many pairs fit on this grid? capacity/2 (each pair = 2 cavities)
+    const pairsPerSheet=Math.floor(capacity/2);
+    const pairsNeeded=pairs.length;
+    const sheetsNeeded=Math.ceil(pairsNeeded/pairsPerSheet);
+    const extraCavities=pairsPerSheet*sheetsNeeded*2 - pairsNeeded*2;
+    // Prefer grids that use the most capacity without excess
+    const waste=1-(Math.min(pairsNeeded,pairsPerSheet)*2*iTrimW*iTrimH)/(cW*cH);
+    candidates.push({cols,rows,rotItems,iW,iH,iTrimW,iTrimH,capacity,flipMode,waste,
+      extraCavities,pairsPerSheet,sheetsNeeded,needW,needH});
   }
 
   // Try portrait and landscape (rotated 90°) item orientations
@@ -2533,18 +2545,33 @@ function smartOrientLayout(){
     alert('No smart orient layout fits on the stock. Try a larger stock size.');return;
   }
 
-  // Sort: prefer exact fit (0 extras) first, then both-axis over lr-only, then least waste
+  // Sort: exact fit first (0 empties), then most pairs per sheet, then both-axis, then least waste
   candidates.sort((a,b)=>{
-    if(a.extraCavities!==b.extraCavities)return a.extraCavities-b.extraCavities;
+    // Exact fit (0 empties on last sheet) is king
+    const aLastPairs=pairs.length - a.pairsPerSheet*(a.sheetsNeeded-1);
+    const aLastEmpty=a.capacity - aLastPairs*2;
+    const bLastPairs=pairs.length - b.pairsPerSheet*(b.sheetsNeeded-1);
+    const bLastEmpty=b.capacity - bLastPairs*2;
+    if((aLastEmpty===0)!==(bLastEmpty===0)) return aLastEmpty===0?-1:1;
+    // Among exact fits (or among non-exact), prefer most pairs per sheet
+    if(b.pairsPerSheet!==a.pairsPerSheet)return b.pairsPerSheet-a.pairsPerSheet;
     const ap=a.flipMode==='both'?0:1, bp=b.flipMode==='both'?0:1;
     if(ap!==bp)return ap-bp;
     return a.waste-b.waste;
   });
 
   const best=candidates[0];
+  const pairsOnSheet=Math.min(pairs.length, best.pairsPerSheet);
+  const usedCavities=pairsOnSheet*2;
+  const emptyCavities=best.capacity-usedCavities;
 
-  if(best.extraCavities>0){
-    alert(`Smart Orient needs ${best.capacity} cavities (${best.cols}×${best.rows}) but you have ${totalCavities} face+back pieces (${pairs.length} pairs).\n\nThat's ${best.extraCavities} empty cavit${best.extraCavities===1?'y':'ies'}.\n\nAdjust quantities to fill the grid, or add extra files. Each face needs a paired back.`);
+  // If there are empty cavities on the last sheet, alert user to adjust
+  const totalPrintRuns=best.sheetsNeeded;
+  // The last sheet may be partial — check if pairs divide evenly
+  const lastSheetPairs=pairs.length - best.pairsPerSheet*(totalPrintRuns-1);
+  const lastSheetEmpty=best.capacity - lastSheetPairs*2;
+  if(lastSheetEmpty>0 && totalPrintRuns>0){
+    alert(`Smart Orient: ${best.cols}×${best.rows} grid fits ${best.pairsPerSheet} pair${best.pairsPerSheet>1?'s':''} per sheet.\n\nWith ${pairs.length} pair${pairs.length>1?'s':''} total, the last sheet has ${lastSheetEmpty} empty cavit${lastSheetEmpty===1?'y':'ies'}.\n\nAdjust quantities to fill the grid, or add extra files.`);
     return;
   }
 
@@ -2630,7 +2657,8 @@ function smartOrientLayout(){
     return(r+c)%2!==0;
   });
 
-  for(let i=0;i<pairs.length;i++){
+  // Assign pairs to face and back slots (only pairsOnSheet, not all expanded pairs)
+  for(let i=0;i<pairsOnSheet;i++){
     const pair=pairs[i];
     if(i<faceSlots.length){
       faceSlots[i].fileId=pair.faceFileId;
@@ -2650,8 +2678,8 @@ function smartOrientLayout(){
   // Center placements in content area
   centerPlacements(placements,cW,cH);
 
-  // printQty = max qty across all pairs (they all print on same sheet)
-  const printQty=Math.max(...pairs.map(p=>p.qty));
+  // printQty = how many times to print this sheet to fulfill the total qty
+  const printQty=totalPrintRuns;
 
   // Build sheets — smart orient is always single-sheet (both sides printed from one file)
   sheets=[{placements:placements,printQty:printQty,smartOrient:true,flipMode:best.flipMode}];
@@ -2663,9 +2691,9 @@ function smartOrientLayout(){
   drawPreview();
 
   const flipDesc=best.flipMode==='both'?'✅ Flip either axis':'⚠️ L/R flip only';
-  el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${best.capacity} cavities (${pairs.length} pair${pairs.length>1?'s':''}) | ${flipDesc}`;
+  el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} per sheet (${usedCavities} cavities) | ${flipDesc}`;
   const cd=el('sheetCalc');cd.style.display='';
-  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${best.flipMode==='both'?'Both-axis flip ✅':'L/R flip only ⚠️'} · Print ${printQty} time${printQty>1?'s':''} · Face+Back on same side`;
+  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} · ${best.flipMode==='both'?'Both-axis flip ✅':'L/R flip only ⚠️'} · Print ${printQty} time${printQty>1?'s':''} = ${pairs.length} total`;
 
   el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
   el('dieSideOptions').style.display='none'; // No separate back side in smart orient
