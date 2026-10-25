@@ -2558,12 +2558,13 @@ function smartOrientLayout(){
   }
 
   // Sort: exact fit first (0 empties), then most pairs per sheet, then both-axis, then least waste
+  const cavPerPair=isSameMode?1:2;
   candidates.sort((a,b)=>{
     // Exact fit (0 empties on last sheet) is king
     const aLastPairs=pairs.length - a.pairsPerSheet*(a.sheetsNeeded-1);
-    const aLastEmpty=a.capacity - aLastPairs;
+    const aLastEmpty=a.capacity - aLastPairs*cavPerPair;
     const bLastPairs=pairs.length - b.pairsPerSheet*(b.sheetsNeeded-1);
-    const bLastEmpty=b.capacity - bLastPairs;
+    const bLastEmpty=b.capacity - bLastPairs*cavPerPair;
     if((aLastEmpty===0)!==(bLastEmpty===0)) return aLastEmpty===0?-1:1;
     // Among exact fits (or among non-exact), prefer most pairs per sheet
     if(b.pairsPerSheet!==a.pairsPerSheet)return b.pairsPerSheet-a.pairsPerSheet;
