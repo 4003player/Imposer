@@ -482,7 +482,7 @@ function onPrintModeChange(){
 function onDblModeChange(){
   const s=S();
   el('commonBackSection').style.display=(s.doubleSided&&s.dblMode==='common')?'':'none';
-  for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;}
+  for(const f of inputFiles)for(const p of f.pages){p.side='face';p.backRef=null;p.noBack=false;}
   invalidateLayout();renderFileList();
 }
 
@@ -1703,6 +1703,12 @@ function invalidateLayout(){
   el('previewBox').style.display='none';el('exportRow').style.display='none';
   el('layoutInfo').textContent='';el('sheetCalc').style.display='none';
   el('layoutChoices').style.display='none';el('dieSideOptions').style.display='none';
+  // Refresh smart orient button visibility
+  const smartBtn=el('smartOrientBtn');
+  if(smartBtn){
+    const s=S();
+    smartBtn.style.display=(s.doubleSided && s.dblMode==='different')?'':'none';
+  }
 }
 
 /* === QTY SCRUBBER === */
