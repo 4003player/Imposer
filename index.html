@@ -2693,8 +2693,13 @@ function smartOrientLayout(){
   cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} · ${flipDesc} · Print ${printQty} time${printQty>1?'s':''} = ${pairs.length} total`;
 
   el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
-  el('dieSideOptions').style.display='none'; // No separate back side in smart orient
+  el('dieSideOptions').style.display=isSameMode?'':'none';
   el('layoutChoices').style.display='none';
+  // Show/hide buttons same as selectLayout
+  el('printDieBtn').style.display='';
+  el('regDotsLabel').style.display='inline-flex';
+  el('cutBtn').style.display='';
+  el('opwBtn').style.display=inputFiles.some(f=>f.pages.some(p=>p.opw))?'':'none';
   // Keep smart orient button visible
   el('smartOrientBtn').style.display='';
   }catch(err){
