@@ -2439,7 +2439,8 @@ function smartOrientLayout(){
   if(!s.doubleSided || s.dblMode!=='different'){
     alert('Smart Orient requires Double-sided + Different mode.');return;
   }
-  applyBleedOverride();
+  // Note: applyBleedOverride() is NOT called here — it triggers invalidateLayout()
+  // which wipes state. Bleed is already applied from file load / settings change.
   const scaleFactor=s.scalePercent/100;
 
   // Collect unique face/back pairs with total quantity
