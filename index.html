@@ -2559,9 +2559,9 @@ function smartOrientLayout(){
   candidates.sort((a,b)=>{
     // Exact fit (0 empties on last sheet) is king
     const aLastPairs=pairs.length - a.pairsPerSheet*(a.sheetsNeeded-1);
-    const aLastEmpty=a.capacity - aLastPairs*2;
+    const aLastEmpty=a.capacity - aLastPairs;
     const bLastPairs=pairs.length - b.pairsPerSheet*(b.sheetsNeeded-1);
-    const bLastEmpty=b.capacity - bLastPairs*2;
+    const bLastEmpty=b.capacity - bLastPairs;
     if((aLastEmpty===0)!==(bLastEmpty===0)) return aLastEmpty===0?-1:1;
     // Among exact fits (or among non-exact), prefer most pairs per sheet
     if(b.pairsPerSheet!==a.pairsPerSheet)return b.pairsPerSheet-a.pairsPerSheet;
