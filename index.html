@@ -2496,9 +2496,10 @@ function smartOrientLayout(){
   const isRotated=refW>refH; // source is landscape, needs 90° rotation to become portrait
   const gut=s.gutter;
 
-  // Cavities needed: 1 per pair — face goes on face side, back goes on back side
-  // Smart orient controls the ORIENTATION (180° pattern), not which art goes where
-  const totalCavities=pairs.length;
+  // Cavities needed:
+  // "same" mode: 1 cavity per piece — back is same art on back page
+  // "different" mode: 2 cavities per piece — face + back on SAME side (quadrant layout)
+  const totalCavities=isSameMode ? pairs.length : pairs.length*2;
 
   // Find best grid within stock (content area = stock - 2*margin)
   const cW=s.stockW-2*s.margin, cH=s.stockH-2*s.margin;
@@ -2517,8 +2518,9 @@ function smartOrientLayout(){
     const needH=rows*iTrimH+(rows-1)*gut;
     if(needW>cW+0.001||needH>cH+0.001)return;
     const capacity=cols*rows;
-    // Grid must hold at least 1 cavity
-    if(capacity<1)return;
+    // Grid must hold at least 1 pair
+    if(isSameMode && capacity<1)return;
+    if(!isSameMode && capacity<2)return;
 
     const bothAxis=cols%2===0&&rows%2===0;
     const lrOnly=cols%2===0&&rows%2!==0;
@@ -2532,8 +2534,8 @@ function smartOrientLayout(){
     else if(tbOnly) flipMode='tb';
     else return;
 
-    // How many pairs fit on this grid? 1 per cavity
-    const pairsPerSheet=capacity;
+    // How many pairs fit on this grid? 1 per cavity (same) or 1 per 2 cavities (different)
+    const pairsPerSheet=isSameMode ? capacity : Math.floor(capacity/2);
     const pairsNeeded=pairs.length;
     const sheetsNeeded=Math.ceil(pairsNeeded/pairsPerSheet);
     const extraCavities=pairsPerSheet*sheetsNeeded - pairsNeeded;
@@ -2579,26 +2581,38 @@ function smartOrientLayout(){
   const totalPrintRuns=best.sheetsNeeded;
 
   // Build the layout!
-  // Smart orient = orientation only. Face art on face side, back art on back side.
-  // The 180° rotation pattern makes the sheet flippable:
-  // - Both-axis (even×even): top half upright, bottom half 180°
-  // - L/R only (even cols, odd rows): all upright
-  // - T/B only (odd cols, even rows): all upright
+  // "same" mode: all same art, 180° bottom half for both-axis. Back page via normal flip.
+  // "different" mode: quadrant layout — face+back on SAME side, single print, no back page.
+  //   Both-axis: TL=B↑, TR=F↑, BL=F↓, BR=B↓
+  //   L/R only: left=B, right=F, all upright
+  //   T/B only: top=B, bottom=F, all upright
 
   const placements=[];
+  const halfC=Math.floor(best.cols/2);
   const halfR=Math.floor(best.rows/2);
 
   for(let r=0;r<best.rows;r++){
     for(let c=0;c<best.cols;c++){
       const x=c*(best.iTrimW+gut)-bl;
       const y=r*(best.iTrimH+gut)-bl;
-      let rot180=false;
+      let rot180=false, isFace=true;
 
-      if(best.flipMode==='both'){
-        // Even×even: bottom half 180°
-        rot180=r>=halfR;
+      if(isSameMode){
+        // Same mode: every cavity is face art. 180° bottom half for both-axis.
+        if(best.flipMode==='both') rot180=r>=halfR;
+      } else {
+        // Different mode: quadrant F/B split
+        if(best.flipMode==='both'){
+          const left=c<halfC, top=r<halfR;
+          isFace=!left;
+          rot180=!top;
+          if(!top) isFace=!isFace;
+        } else if(best.flipMode==='lr'){
+          isFace=c>=halfC;
+        } else {
+          isFace=r>=halfR;
+        }
       }
-      // L/R and T/B: all upright (no 180°)
 
       const itemRotated=best.rotItems?(refW<=refH):refW>refH;
       placements.push({
@@ -2615,19 +2629,43 @@ function smartOrientLayout(){
         enlargeBleed:pairs[0].enlargeBleed, diePaths:pairs[0].diePaths,
         scaleFactor:pairs[0].scaleFactor,
         smartRot180:rot180,
+        _isFace:isFace,
         label:'',
         type:'pdf',
       });
     }
   }
 
-  // Assign pairs to slots — each pair gets 1 cavity with face art
-  for(let i=0;i<pairsOnSheet && i<placements.length;i++){
-    const pair=pairs[i];
-    placements[i].fileId=pair.faceFileId;
-    placements[i].pageIndex=pair.facePageIndex;
-    placements[i].label=pair.faceName;
-    placements[i].type=inputFiles.find(f2=>f2.id===pair.faceFileId)?.type||'pdf';
+  // Assign pairs to slots
+  if(isSameMode){
+    // Same mode: all slots get face art, back page via normal flip
+    for(let i=0;i<pairsOnSheet && i<placements.length;i++){
+      const pair=pairs[i];
+      placements[i].fileId=pair.faceFileId;
+      placements[i].pageIndex=pair.facePageIndex;
+      placements[i].label=pair.faceName;
+      placements[i].type=inputFiles.find(f2=>f2.id===pair.faceFileId)?.type||'pdf';
+    }
+  } else {
+    // Different mode: face slots get face art, back slots get back art
+    const faceSlots=placements.filter(p=>p._isFace);
+    const backSlots=placements.filter(p=>!p._isFace);
+    for(let i=0;i<pairsOnSheet;i++){
+      const pair=pairs[i];
+      if(i<faceSlots.length){
+        faceSlots[i].fileId=pair.faceFileId;
+        faceSlots[i].pageIndex=pair.facePageIndex;
+        faceSlots[i].label=pair.faceName;
+        faceSlots[i].type=inputFiles.find(f2=>f2.id===pair.faceFileId)?.type||'pdf';
+      }
+      if(i<backSlots.length){
+        backSlots[i].fileId=pair.noBack?null:pair.backFileId;
+        backSlots[i].pageIndex=pair.noBack?null:pair.backPageIndex;
+        backSlots[i].label=pair.noBack?'(no back)':'(B) '+pair.backName;
+        backSlots[i].type=pair.noBack?null:(inputFiles.find(f2=>f2.id===pair.backFileId)?.type||'pdf');
+        if(pair.noBack) backSlots[i]._blank=true;
+      }
+    }
   }
 
   // Center placements in content area
@@ -2636,8 +2674,11 @@ function smartOrientLayout(){
   // printQty = how many times to print this sheet to fulfill the total qty
   const printQty=totalPrintRuns;
 
-  // Build sheets — smart orient always needs a back page (back art via normal flip)
-  sheets=[{placements:placements,printQty:printQty,smartOrient:true,smartNeedsBack:true,flipMode:best.flipMode}];
+  // Build sheets
+  // "same" mode: needs back page (same art, flipped)
+  // "different" mode: single-sided (face+back on same side), NO back page
+  const needsBackPage=isSameMode;
+  sheets=[{placements:placements,printQty:printQty,smartOrient:true,smartNeedsBack:needsBackPage,flipMode:best.flipMode}];
   sheetPrintQty=printQty;
   viewSheet=0;viewSide='face';
 
