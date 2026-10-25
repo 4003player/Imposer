@@ -2512,13 +2512,15 @@ function smartOrientLayout(){
     if(capacity<2)return;
 
     const bothAxis=cols%2===0&&rows%2===0;
-    const lrOnly=cols%2===0; // even cols, possibly odd rows
-    // Odd cols → fall back to standard layout (per spec)
-    if(cols%2!==0)return;
+    const lrOnly=cols%2===0&&rows%2!==0;
+    const tbOnly=cols%2!==0&&rows%2===0;
+    // Odd cols AND odd rows → fall back to standard layout
+    if(cols%2!==0&&rows%2!==0)return;
 
     let flipMode;
     if(bothAxis) flipMode='both';
     else if(lrOnly) flipMode='lr';
+    else if(tbOnly) flipMode='tb';
     else return;
 
     // How many pairs fit on this grid? capacity/2 (each pair = 2 cavities)
@@ -2534,7 +2536,7 @@ function smartOrientLayout(){
 
   // Try portrait and landscape (rotated 90°) item orientations
   for(const rotItems of[false,true]){
-    for(let cols=2;cols<=40;cols+=2){ // even cols only
+    for(let cols=1;cols<=40;cols++){
       for(let rows=1;rows<=40;rows++){
         tryGrid(cols,rows,rotItems);
       }
@@ -2576,16 +2578,17 @@ function smartOrientLayout(){
   }
 
   // Build the layout!
-  // Rules:
-  // - Checkerboard F/B pattern
-  // - For portrait items: rows alternate 180° (for both-axis)
-  //   For single row with even cols: left half=B, right half=F (work-and-turn)
-  //   For odd rows with even cols: middle row uses left=B/right=F split
-  // - For rotated (landscape) items: cols alternate 180°
+  // QUADRANT approach (not checkerboard):
+  // - Split sheet into halves/quadrants
+  // - Left half = B, Right half = F (for L/R flip)
+  // - Top half upright, Bottom half 180° (for T/B flip)
+  // - Even cols × even rows (both): 4 quadrants — TL=B↑, TR=F↑, BL=F↓, BR=B↓
+  // - Even cols × odd rows (L/R only): left=B, right=F, top upright, bottom 180°, middle row: left=B right=F no rotation
+  // - Odd cols × even rows (T/B only): top=B, bottom=F (with 180°), middle col: top=B bottom=F no rotation
 
   const placements=[];
-  let pairIdx=0;
-  const half=best.cols/2;
+  const halfC=Math.floor(best.cols/2);
+  const halfR=Math.floor(best.rows/2);
 
   for(let r=0;r<best.rows;r++){
     for(let c=0;c<best.cols;c++){
@@ -2594,34 +2597,41 @@ function smartOrientLayout(){
       let isFace, rot180=false;
 
       if(best.flipMode==='both'){
-        // Even×even: checkerboard, rows alternate 180°
-        isFace=(r+c)%2===0;
-        rot180=r%2===1;
-      } else {
-        // Even cols × odd rows (lr-only)
-        const isMiddleRow=(best.rows%2===1)&&(r===Math.floor(best.rows/2));
-        if(isMiddleRow||best.rows===1){
-          // Split row: left half=B, right half=F
-          isFace=c>=half;
+        // Even×even: 4 quadrants
+        const left=c<halfC, top=r<halfR;
+        isFace=!left;  // right=Face, left=Back
+        rot180=!top;    // bottom rows 180°
+        // Swap face/back in bottom half to maintain flip symmetry
+        if(!top) isFace=!isFace;
+      } else if(best.flipMode==='lr'){
+        // Even cols × odd rows: left/right split
+        const left=c<halfC;
+        const isMiddleRow=best.rows%2===1 && r===halfR;
+        isFace=!left;  // right=Face, left=Back
+        if(isMiddleRow){
           rot180=false;
         } else {
-          // Paired rows: checkerboard + 180° alternation
-          isFace=(r+c)%2===0;
-          rot180=r%2===1;
+          const top=r<halfR;
+          rot180=!top;
+          if(!top) isFace=!isFace;
+        }
+      } else {
+        // Odd cols × even rows (T/B only): top/bottom split
+        const top=r<halfR;
+        const isMiddleCol=best.cols%2===1 && c===halfC;
+        isFace=!top;  // bottom=Face, top=Back
+        if(isMiddleCol){
+          rot180=false;
+        } else {
+          const left=c<halfC;
+          rot180=!left;
+          if(!left) isFace=!isFace;
         }
       }
 
-      // Pick the pair to use
-      const pair=pairs[pairIdx%pairs.length];
-      const fileId=isFace?pair.faceFileId:pair.backFileId;
-      const pageIndex=isFace?pair.facePageIndex:pair.backPageIndex;
-      // Advance pair index: each pair contributes 2 cavities (F+B)
-      // We need to assign pairs so each face and back from same pair appear on the sheet
-      // The interleaving is handled by the checkerboard — pairs fill in order
-
       const itemRotated=best.rotItems?(refW<=refH):refW>refH;
       placements.push({
-        fileId:fileId, pageIndex:pageIndex,
+        fileId:null, pageIndex:null,
         x:x, y:y,
         w:best.iW+2*bl, h:best.iH+2*bl,
         trimW:best.iTrimW, trimH:best.iTrimH,
@@ -2630,34 +2640,21 @@ function smartOrientLayout(){
         physW:best.rotItems?physH:physW, physH:best.rotItems?physW:physH,
         trimWOrig:best.rotItems?Math.max(refW,refH):Math.min(refW,refH),
         trimHOrig:best.rotItems?Math.min(refW,refH):Math.max(refW,refH),
-        srcW:pair.srcW, srcH:pair.srcH, srcBleed:pair.srcBleed,
-        enlargeBleed:pair.enlargeBleed, diePaths:pair.diePaths,
-        scaleFactor:pair.scaleFactor,
+        srcW:pairs[0].srcW, srcH:pairs[0].srcH, srcBleed:pairs[0].srcBleed,
+        enlargeBleed:pairs[0].enlargeBleed, diePaths:pairs[0].diePaths,
+        scaleFactor:pairs[0].scaleFactor,
         smartRot180:rot180,
-        label:(isFace?pair.faceName:'(B) '+pair.backName)||'piece',
-        type:inputFiles.find(f2=>f2.id===fileId)?.type||'pdf',
+        _isFace:isFace,
+        label:'',
+        type:'pdf',
       });
     }
   }
 
-  // Assign pairs to cavities properly
-  // Collect face slots and back slots, assign pairs in order
-  const faceSlots=placements.filter((_,i)=>{
-    const r=Math.floor(i/best.cols), c=i%best.cols;
-    if(best.flipMode==='both') return(r+c)%2===0;
-    const isMiddleRow=(best.rows%2===1)&&(r===Math.floor(best.rows/2));
-    if(isMiddleRow||best.rows===1) return c>=half;
-    return(r+c)%2===0;
-  });
-  const backSlots=placements.filter((_,i)=>{
-    const r=Math.floor(i/best.cols), c=i%best.cols;
-    if(best.flipMode==='both') return(r+c)%2!==0;
-    const isMiddleRow=(best.rows%2===1)&&(r===Math.floor(best.rows/2));
-    if(isMiddleRow||best.rows===1) return c<half;
-    return(r+c)%2!==0;
-  });
+  // Assign pairs to face and back slots
+  const faceSlots=placements.filter(p=>p._isFace);
+  const backSlots=placements.filter(p=>!p._isFace);
 
-  // Assign pairs to face and back slots (only pairsOnSheet, not all expanded pairs)
   for(let i=0;i<pairsOnSheet;i++){
     const pair=pairs[i];
     if(i<faceSlots.length){
@@ -2690,10 +2687,10 @@ function smartOrientLayout(){
   el('stockW').value=s.stockW; el('stockH').value=s.stockH;
   drawPreview();
 
-  const flipDesc=best.flipMode==='both'?'✅ Flip either axis':'⚠️ L/R flip only';
+  const flipDesc=best.flipMode==='both'?'✅ Flip either axis':best.flipMode==='lr'?'⚠️ L/R flip only':'⚠️ T/B flip only';
   el('layoutInfo').textContent=`Smart Orient: ${best.cols}×${best.rows} = ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} per sheet (${usedCavities} cavities) | ${flipDesc}`;
   const cd=el('sheetCalc');cd.style.display='';
-  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} · ${best.flipMode==='both'?'Both-axis flip ✅':'L/R flip only ⚠️'} · Print ${printQty} time${printQty>1?'s':''} = ${pairs.length} total`;
+  cd.innerHTML=`<b>Smart Orient</b>: ${best.cols}×${best.rows} grid · ${pairsOnSheet} pair${pairsOnSheet>1?'s':''} · ${flipDesc} · Print ${printQty} time${printQty>1?'s':''} = ${pairs.length} total`;
 
   el('previewBox').style.display='';el('exportRow').style.display='flex';el('markOptions').style.display='';
   el('dieSideOptions').style.display='none'; // No separate back side in smart orient
