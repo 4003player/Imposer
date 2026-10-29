@@ -334,6 +334,7 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
       <button class="btn btn-white" id="opwBtn" style="display:none">Download OPW PDF</button>
       <button class="btn btn-cut" id="cutBtn">Download Cut PDF</button>
       <button class="btn" id="pressPreviewBtn" style="background:#8b5cf6;color:#fff">⬇ Press Preview (8.5×14)</button>
+      <button class="btn" id="fitSheetBtn" style="background:#6b7280;color:#fff" onclick="fitSheetToLayout()">Fit Sheet to Layout</button>
     </div>
     <div id="markOptions" style="display:none;margin-top:8px;text-align:center;font-size:12px;color:#666">
       <label style="cursor:pointer;margin-right:12px;user-select:none"><input type="checkbox" id="includeSlug" checked> Slug</label>
@@ -370,11 +371,16 @@ let fileIdSeq=0, sheets=[], viewSheet=0, viewSide='face', sheetPrintQty=1;
 let spotColorConfig = {
   dieSpotNames: new Set(),
   creaseSpotNames: new Set(),
+  zundMethodMap: new Map(), // sourceSpotName → {name, cmyk} for Zünd output
   generatedDieName: 'CutContour',
   generatedDieCmyk: [0, 1, 0, 0],
   configured: false
 };
-const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut'];
+const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut',
+  'KissCut','Kiss-cut','Kiss_cut','V-cut','Vcut','V_cut',
+  'Bevel-cut','Bevelcut','Bevel_cut','Score','Crease',
+  'Route','Router','Engrave','Drill','Punch','Perf','PerfCut',
+  'Die','DieCut','Die_Cut','Cutter','Cut','Trim','Fold'];
 
 /* CMYK JPEG handling: detect 4-component JPEGs and convert to PNG via canvas.
    Illustrator ignores /Decode on DCTDecode images, causing YCCK negatives.
@@ -665,19 +671,57 @@ function showSpotColorModal(allSpots, onConfirm){
   modal.className = 'spot-modal';
 
   let html = '<h3>Spot Colors Detected</h3>';
-  html += '<p class="spot-sub">Classify each spot color channel found in your files</p>';
+  html += '<p class="spot-sub">Classify each spot color channel found in your files.<br>Cut methods use Z\u00fcnd/Esko standard names for automatic tool selection.</p>';
+
+  // Zünd cut method names with RGB display colors
+  const ZUND_METHODS = [
+    {value:'Thru-cut',  label:'Thru-cut',  rgb:[57,83,164]},
+    {value:'Kiss-cut',  label:'Kiss-cut',  rgb:[238,50,43]},
+    {value:'Crease',    label:'Crease',    rgb:[25,178,75]},
+    {value:'Score',     label:'Score',     rgb:[169,29,34]},
+    {value:'Route',     label:'Route',     rgb:[50,43,112]},
+    {value:'Engrave',   label:'Engrave',   rgb:[207,217,53]},
+    {value:'V-cut',     label:'V-cut',     rgb:[103,108,46]},
+    {value:'Bevel-cut', label:'Bevel-cut', rgb:[20,87,44]},
+    {value:'Drill',     label:'Drill',     rgb:[29,90,133]},
+    {value:'Punch',     label:'Punch',     rgb:[96,158,213]}
+  ];
+
+  // Auto-detect which Zünd method a spot name maps to
+  function autoDetectZundMethod(spotName){
+    const norm = spotName.toLowerCase().replace(/[\s_-]/g,'');
+    const map = {
+      'thrucut':'Thru-cut','cutcontour':'Thru-cut','dieline':'Thru-cut','diecut':'Thru-cut',
+      'die':'Thru-cut','cutter':'Thru-cut','cut':'Thru-cut','trim':'Thru-cut',
+      'kisscut':'Kiss-cut',
+      'crease':'Crease','fold':'Crease',
+      'score':'Score',
+      'route':'Route','router':'Route',
+      'engrave':'Engrave',
+      'vcut':'V-cut',
+      'bevelcut':'Bevel-cut',
+      'drill':'Drill',
+      'punch':'Punch',
+      'perf':'Thru-cut','perfcut':'Thru-cut'
+    };
+    return map[norm] || null;
+  }
 
   for(let i=0; i<allSpots.length; i++){
     const sp = allSpots[i];
     const rgb = cmykToRgb(sp.cmyk[0]||0, sp.cmyk[1]||0, sp.cmyk[2]||0, sp.cmyk[3]||0);
     const isDie = KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase());
+    const detectedMethod = autoDetectZundMethod(sp.spotName);
     html += `<div class="spot-row">`;
     html += `<div class="spot-swatch" style="background:rgb(${rgb[0]},${rgb[1]},${rgb[2]})"></div>`;
     html += `<span class="spot-name">${esc(sp.spotName)}</span>`;
     html += `<span class="spot-role"><select data-spot-idx="${i}">`;
     html += `<option value="print"${isDie?'':' selected'}>Print color (keep)</option>`;
-    html += `<option value="die"${isDie?' selected':''}>Die line</option>`;
-    html += `<option value="crease">Crease line</option>`;
+    html += `<option value="white">White (OPW)</option>`;
+    for(const zm of ZUND_METHODS){
+      const sel = (isDie && (detectedMethod === zm.value || (!detectedMethod && zm.value === 'Thru-cut'))) ? ' selected' : '';
+      html += `<option value="die:${zm.value}"${sel}>\u2702 ${zm.label}</option>`;
+    }
     html += `</select></span></div>`;
   }
 
@@ -702,18 +746,19 @@ function showSpotColorModal(allSpots, onConfirm){
   const roleSelects = modal.querySelectorAll('[data-spot-idx]');
 
   function updateGenOptions(){
-    const dieNames = [];
+    // Collect Zünd method names from die-classified spots
+    const methodNames = new Set();
     roleSelects.forEach(sel => {
-      if(sel.value === 'die') dieNames.push(allSpots[parseInt(sel.dataset.spotIdx)].spotName);
+      if(sel.value.startsWith('die:')) methodNames.add(sel.value.substring(4));
     });
     const currentVal = genSel.value;
     genSel.innerHTML = '';
-    for(const dn of dieNames){
+    for(const mn of methodNames){
       const opt = document.createElement('option');
-      opt.value = dn; opt.textContent = dn;
+      opt.value = mn; opt.textContent = mn;
       genSel.appendChild(opt);
     }
-    if(!dieNames.length){
+    if(!methodNames.size){
       const opt = document.createElement('option');
       opt.value = 'CutContour'; opt.textContent = 'CutContour';
       genSel.appendChild(opt);
@@ -723,7 +768,7 @@ function showSpotColorModal(allSpots, onConfirm){
     genSel.appendChild(customOpt);
     // Restore selection if still valid
     if([...genSel.options].some(o => o.value === currentVal)) genSel.value = currentVal;
-    else if(dieNames.length) genSel.value = dieNames[0];
+    else if(methodNames.size) genSel.value = [...methodNames][0];
     genInput.style.display = genSel.value === '__custom__' ? '' : 'none';
   }
 
@@ -733,13 +778,31 @@ function showSpotColorModal(allSpots, onConfirm){
   });
   updateGenOptions();
 
+  // Zünd method RGB→CMYK lookup
+  const ZUND_CMYK = {
+    'Thru-cut':  [0.78,0.67,0,0.36], 'Kiss-cut':  [0,0.79,0.82,0.07],
+    'Crease':    [0.86,0,0.58,0.30], 'Score':     [0,0.83,0.80,0.34],
+    'Route':     [0.55,0.62,0,0.56], 'Engrave':   [0,0,0.76,0.15],
+    'V-cut':     [0,0,0,0.60],       'Bevel-cut': [0.77,0,0.49,0.66],
+    'Drill':     [0.78,0.32,0,0.48], 'Punch':     [0.55,0.26,0,0.16]
+  };
+
   function applyConfig(){
     spotColorConfig.dieSpotNames = new Set();
     spotColorConfig.creaseSpotNames = new Set();
+    spotColorConfig.zundMethodMap = new Map();
     roleSelects.forEach(sel => {
       const sp = allSpots[parseInt(sel.dataset.spotIdx)];
-      if(sel.value === 'die') spotColorConfig.dieSpotNames.add(sp.spotName);
-      else if(sel.value === 'crease') spotColorConfig.creaseSpotNames.add(sp.spotName);
+      if(sel.value.startsWith('die:')){
+        spotColorConfig.dieSpotNames.add(sp.spotName);
+        const method = sel.value.substring(4);
+        if(method === 'Crease' || method === 'Score') spotColorConfig.creaseSpotNames.add(sp.spotName);
+        // Map source spot name → Zünd method name + CMYK
+        spotColorConfig.zundMethodMap.set(sp.spotName, {
+          name: method,
+          cmyk: ZUND_CMYK[method] || [0,1,0,0]
+        });
+      }
     });
     if(genSel.value === '__custom__' && genInput.value.trim()){
       spotColorConfig.generatedDieName = genInput.value.trim();
@@ -755,16 +818,35 @@ function showSpotColorModal(allSpots, onConfirm){
   }
 
   function skipConfig(){
-    // Use defaults: auto-detect die names
+    // Use defaults: auto-detect die names and classify crease/score
     spotColorConfig.dieSpotNames = new Set();
     spotColorConfig.creaseSpotNames = new Set();
+    spotColorConfig.zundMethodMap = new Map();
+    const creaseNames = ['crease','score','fold'];
     for(const sp of allSpots){
       if(KNOWN_DIE_NAMES.some(d => d.toLowerCase() === sp.spotName.toLowerCase())){
         spotColorConfig.dieSpotNames.add(sp.spotName);
+        const norm = sp.spotName.toLowerCase().replace(/[\s_-]/g,'');
+        if(creaseNames.includes(norm)) spotColorConfig.creaseSpotNames.add(sp.spotName);
+        // Auto-detect Zünd method from spot name
+        const detected = autoDetectZundMethod(sp.spotName);
+        if(detected){
+          spotColorConfig.zundMethodMap.set(sp.spotName, {
+            name: detected,
+            cmyk: ZUND_CMYK[detected] || [0,1,0,0]
+          });
+        }
       }
     }
-    spotColorConfig.generatedDieName = 'CutContour';
-    spotColorConfig.generatedDieCmyk = [0, 1, 0, 0];
+    // Set generated die name from first detected method
+    if(spotColorConfig.zundMethodMap.size > 0){
+      const first = [...spotColorConfig.zundMethodMap.values()][0];
+      spotColorConfig.generatedDieName = first.name;
+      spotColorConfig.generatedDieCmyk = first.cmyk;
+    } else {
+      spotColorConfig.generatedDieName = 'CutContour';
+      spotColorConfig.generatedDieCmyk = [0, 1, 0, 0];
+    }
     spotColorConfig.configured = true;
     overlay.remove();
     extractDiePathsForAllFilesAsync().then(onConfirm);
@@ -834,6 +916,12 @@ function scanRawBytesForSpots(pdfBytes){
         if(c1Match){
           const vals = c1Match[1].trim().split(/\s+/).map(Number);
           if(vals.length >= 4) cmyk = vals.slice(0,4);
+          else if(vals.length === 3){
+            // RGB alternate space — convert to CMYK
+            const r=vals[0], g=vals[1], b=vals[2];
+            const k=1-Math.max(r,g,b);
+            cmyk = k>=1 ? [0,0,0,1] : [(1-r-k)/(1-k), (1-g-k)/(1-k), (1-b-k)/(1-k), k];
+          }
         }
         map.set(csName, {spotName, cmyk});
       }
@@ -874,13 +962,27 @@ function extractAllSpotColors(pdfBytes, doc, pageIdx, rawSpotMap){
               const fn = resolve(arr.get(3));
               if(fn && fn instanceof PDFLib.PDFDict){
                 const c1 = fn.get(PDFLib.PDFName.of('C1'));
-                if(c1 && c1 instanceof PDFLib.PDFArray && c1.size() >= 4){
-                  cmyk = [];
-                  for(let ci=0;ci<4;ci++){
-                    const v = c1.get(ci);
-                    cmyk.push(v && typeof v.numberValue === 'function' ? v.numberValue() :
-                              v && typeof v.value === 'function' ? parseFloat(v.value()) :
-                              typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+                if(c1 && c1 instanceof PDFLib.PDFArray){
+                  const c1Len = c1.size();
+                  if(c1Len >= 4){
+                    cmyk = [];
+                    for(let ci=0;ci<4;ci++){
+                      const v = c1.get(ci);
+                      cmyk.push(v && typeof v.numberValue === 'function' ? v.numberValue() :
+                                v && typeof v.value === 'function' ? parseFloat(v.value()) :
+                                typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+                    }
+                  } else if(c1Len === 3){
+                    // RGB alternate space — convert to CMYK
+                    const rgb = [];
+                    for(let ci=0;ci<3;ci++){
+                      const v = c1.get(ci);
+                      rgb.push(v && typeof v.numberValue === 'function' ? v.numberValue() :
+                               v && typeof v.value === 'function' ? parseFloat(v.value()) :
+                               typeof v === 'number' ? v : parseFloat(String(v)) || 0);
+                    }
+                    const k2=1-Math.max(rgb[0],rgb[1],rgb[2]);
+                    cmyk = k2>=1 ? [0,0,0,1] : [(1-rgb[0]-k2)/(1-k2), (1-rgb[1]-k2)/(1-k2), (1-rgb[2]-k2)/(1-k2), k2];
                   }
                 }
               }
@@ -1002,6 +1104,7 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
   let currentPath = [];
   let lineWidth = 2.835; // default
   let qDepth = 0; // track q/Q nesting inside die path section
+  let currentCSName = ''; // which die CS is currently active
   
   for(const line of lines){
     const trimmed = line.trim();
@@ -1014,6 +1117,8 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
           inDiePath = true;
           currentPath = [];
           qDepth = 0;
+          currentCSName = csName;
+          console.log('[extractPaths] ENTER die mode, csName=', csName, 'line=', trimmed);
           break;
         }
       }
@@ -1024,8 +1129,24 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
     if(inDiePath){
       // Check for CS switch away from die line
       if(trimmed.includes(' CS ') && !dieCSNames.some(n => trimmed.includes('/'+n))){
-        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+        console.log('[extractPaths] EXIT die mode (non-die CS), line=', trimmed);
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, csName: currentCSName});
         inDiePath = false; currentPath = []; continue;
+      }
+      // Check for CS switch TO a different die CS (e.g., CutContour → V-cut)
+      if(trimmed.includes(' CS ') && trimmed.includes('SCN')){
+        for(const csName of dieCSNames){
+          if((trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
+              trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')) && csName !== currentCSName){
+            if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, csName: currentCSName});
+            currentCSName = csName;
+            currentPath = [];
+            qDepth = 0;
+            console.log('[extractPaths] SWITCH die CS to', csName);
+            break;
+          }
+        }
+        continue;
       }
       
       // Track q/Q nesting — only exit on outermost Q (the one that was open before die mode)
@@ -1046,7 +1167,7 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
         qDepth--;
         if(qDepth < 0){
           // Outermost Q (the one from before die mode) — end of die path section
-          if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+          if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, csName: currentCSName});
           inDiePath = false; currentPath = []; qDepth = 0;
           continue;
         }
@@ -1054,7 +1175,7 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
         continue;
       }
       if(trimmed === 'EMC'){
-        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+        if(currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, csName: currentCSName});
         inDiePath = false; currentPath = []; qDepth = 0; continue;
       }
       
@@ -1095,7 +1216,8 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
       if(trimmed === 'S' || trimmed === 'f' || trimmed === 'B'){
         // Only strokes (S) are die paths — fills (f) are printed art on the die layer
         if(currentPath.length > 0 && (trimmed === 'S' || trimmed === 'B')){
-          paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed});
+          console.log('[extractPaths] PUSH path, csName=', currentCSName, 'ops=', currentPath.length);
+          paths.push({ops: [...currentPath], width: lineWidth, stroke: trimmed, csName: currentCSName});
         }
         currentPath = []; continue;
       }
@@ -1110,7 +1232,9 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
     }
   }
   // Catch any remaining path
-  if(inDiePath && currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth});
+  if(inDiePath && currentPath.length > 0) paths.push({ops: [...currentPath], width: lineWidth, csName: currentCSName});
+  
+  console.log('[extractPathsForCS] pre-filter paths:', paths.length, 'by CS:', paths.reduce((m,p)=>{m[p.csName]=(m[p.csName]||0)+1;return m;},{}));
   
   // Filter out paths that are entirely outside the page bounds (pasteboard art)
   // Illustrator draws die paths on the pasteboard outside the art board.
@@ -1157,6 +1281,7 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
     return true;
   });
   
+  console.log('[extractPathsForCS] post-filter paths:', filtered.length, 'by CS:', filtered.reduce((m,p)=>{m[p.csName]=(m[p.csName]||0)+1;return m;},{}));
   return filtered.length > 0 ? {paths: filtered, pageW, pageH} : null;
 }
 
@@ -2521,15 +2646,11 @@ async function stripDieFromPdfDoc(pdfBytes, dieCSNames, dieCSCmyk){
                        pt.match(/^\/\w+\s+CS\b/);
               });
               if(!hasColor && pendingPath.length > 0){
-                // Orphan stroke — no color set since last boundary. 
-                // Check if it's just a rect (likely die)
-                const hasRect = pendingPath.some(pp => pp.trim().match(/^[\d.\- ]+ re$/));
-                if(hasRect){
-                  // Remove this orphan stroke path
-                  dieStrokeCount++;
-                  pendingPath = [];
-                  continue;
-                }
+                // Orphan stroke — no color set since last boundary.
+                // Remove it: these are die paths that lost their CS.
+                dieStrokeCount++;
+                pendingPath = [];
+                continue;
               }
               for(const pp of pendingPath) outText.push(pp);
               pendingPath = [];
@@ -2761,7 +2882,7 @@ async function exportPrintPDF(){
         // Collect die CS names from pages that have die paths
         const dieCSNames = [];
         const dieCSCmyk = {};
-        for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
+        for(const pi of pis){const pg=f.pages[pi];if(!pg)continue;if(pg.diePaths&&pg.spotColors){for(const sc of pg.spotColors){if(KNOWN_DIE_NAMES.some(d=>d.toLowerCase()===sc.spotName.toLowerCase())||spotColorConfig.dieSpotNames.has(sc.spotName)||spotColorConfig.creaseSpotNames.has(sc.spotName)){if(!dieCSNames.includes(sc.csName))dieCSNames.push(sc.csName);dieCSCmyk[sc.csName]=sc.cmyk;}}}}
         let sd;
         if(dieCSNames.length>0){
           // Strip die from Print PDF so Caldera doesn't generate cut marks
@@ -3032,9 +3153,31 @@ function exportCutPDF(){
         let effSrcW=srcW, effSrcH=srcH;
         if(p.rotated){ effSrcW=srcH; effSrcH=srcW; }
         const scaleX=pw/effSrcW, scaleY=ph/effSrcH;
+        // Build CS→spot lookup from source page for per-path Zünd method resolution
+        const srcFile = inputFiles.find(f=>f.id===p.fileId);
+        const csToSpot = new Map();
+        if(srcFile){
+          const srcPage = srcFile.pages.find(pg=>pg.index===p.pageIndex);
+          if(srcPage && srcPage.spotColors){
+            for(const sc of srcPage.spotColors){
+              csToSpot.set(sc.csName, sc);
+              // Also map by spotName (content streams may reference by name)
+              csToSpot.set(sc.spotName, sc);
+            }
+          }
+        }
         for(const path of p.diePaths.paths){
           const translated=translateDiePath(path, posX, posY, scaleX, scaleY, effSrcH, ph, p.rotated, srcW);
-          cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY)});
+          // Resolve this path's CS to a Zünd method name + color
+          let pathSpotName = null, pathSpotCmyk = null;
+          const sc = csToSpot.get(path.csName);
+          console.log('[CutPDF] path.csName=', path.csName, 'sc?', sc?.spotName, 'csToSpot keys:', [...csToSpot.keys()]);
+          if(sc){
+            const zund = spotColorConfig.zundMethodMap.get(sc.spotName);
+            if(zund){ pathSpotName = zund.name; pathSpotCmyk = zund.cmyk; }
+            else { pathSpotName = sc.spotName; pathSpotCmyk = sc.cmyk; }
+          }
+          cuts.push({type:'path', ops:translated.ops, width:path.width*Math.min(scaleX,scaleY), spotName:pathSpotName, spotCmyk:pathSpotCmyk});
         }
       } else {
         // Fall back to rectangular cut from trim or full image edge
@@ -3136,22 +3279,56 @@ function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, ro
 
 function buildCutPDF(sd,W,H){
   const R=REG_R,K=KAPPA,n=sd.length,f=v=>v.toFixed(4);
-  const dieName = spotColorConfig.generatedDieName || 'CutContour';
-  const dieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+  const defaultDieName = spotColorConfig.generatedDieName || 'CutContour';
+  const defaultDieCmyk = spotColorConfig.generatedDieCmyk || [0,1,0,0];
+  console.log('[buildCutPDF] defaultDieName=', defaultDieName, 'zundMethodMap size=', spotColorConfig.zundMethodMap.size);
   function circ(cx,cy,r){return`${f(cx+r)} ${f(cy)} m ${f(cx+r)} ${f(cy+r*K)} ${f(cx+r*K)} ${f(cy+r)} ${f(cx)} ${f(cy+r)} c ${f(cx-r*K)} ${f(cy+r)} ${f(cx-r)} ${f(cy+r*K)} ${f(cx-r)} ${f(cy)} c ${f(cx-r)} ${f(cy-r*K)} ${f(cx-r*K)} ${f(cy-r)} ${f(cx)} ${f(cy-r)} c ${f(cx+r*K)} ${f(cy-r)} ${f(cx+r)} ${f(cy-r*K)} ${f(cx+r)} ${f(cy)} c f\n`;}
-  const tot=3+2*n,pids=[];for(let i=0;i<n;i++)pids.push(5+2*i);
+
+  // Collect unique spot names from all cuts (preserve original source names)
+  const spotMap = new Map(); // name → cmyk
+  for(const sh of sd){
+    for(const c of sh.cuts){
+      const sn = c.spotName || defaultDieName;
+      if(!spotMap.has(sn)) spotMap.set(sn, c.spotCmyk || defaultDieCmyk);
+    }
+  }
+  if(!spotMap.size) spotMap.set(defaultDieName, defaultDieCmyk);
+  const spotNames = [...spotMap.keys()];
+  console.log('[buildCutPDF] spotNames:', spotNames, 'cuts sample:', sd[0]?.cuts?.slice(0,3).map(c=>({type:c.type, spotName:c.spotName, csName:c._csName})));
+
+  // Object layout: 1=Catalog, 2=Pages, 3..3+spotNames.length-1=CS objects, then page+stream pairs
+  const numCS = spotNames.length;
+  const firstCSObj = 3;
+  const firstPageStreamObj = firstCSObj + numCS;
+  const tot = firstPageStreamObj + 2*n - 1;
+  const pids=[];for(let i=0;i<n;i++)pids.push(firstPageStreamObj + 2*i + 1);
+
   let pdf='%PDF-1.4\n';const offs=[];
   function wo(id,b){offs[id-1]=pdf.length;pdf+=`${id} 0 obj\n${b}\nendobj\n`;}
   wo(1,'<< /Type /Catalog /Pages 2 0 R >>');
   wo(2,`<< /Type /Pages /Kids [${pids.map(i=>i+' 0 R').join(' ')}] /Count ${n} >>`);
-  wo(3,`[/Separation /${dieName} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${dieCmyk.join(' ')}] /N 1 >>]`);
+
+  // Create Separation CS objects
+  for(let si=0;si<spotNames.length;si++){
+    const sn = spotNames[si];
+    const cmyk = spotMap.get(sn);
+    wo(firstCSObj+si,`[/Separation /${sn} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${cmyk.join(' ')}] /N 1 >>]`);
+  }
+
   for(let i=0;i<n;i++){
-    const sh=sd[i];let s=`/${dieName} CS\n1 SCN\n2.835 w\n`;
+    const sh=sd[i];
+    // Group cuts by spot name so we switch CS efficiently
+    let s='';
+    let curCS = null;
     for(const c of sh.cuts){
+      const sn = c.spotName || defaultDieName;
+      if(sn !== curCS){
+        s+=`/${sn} CS\n1 SCN\n`;
+        curCS = sn;
+      }
       if(c.type==='rect'){
-        s+=`${f(c.x)} ${f(c.y)} ${f(c.w)} ${f(c.h)} re S\n`;
+        s+=`2.835 w\n${f(c.x)} ${f(c.y)} ${f(c.w)} ${f(c.h)} re S\n`;
       } else if(c.type==='path'){
-        // Set the extracted path's line width
         s+=`${f(c.width||2.835)} w\n`;
         for(const op of c.ops){
           if(op.op==='m') s+=`${f(op.x)} ${f(op.y)} m\n`;
@@ -3164,9 +3341,12 @@ function buildCutPDF(sd,W,H){
       }
     }
     s+='0 0 0 1 k\n';for(const d of sh.dots)s+=circ(d.cx,d.cy,R);
-    const sid=4+2*i,pid=5+2*i;
+    const sid=firstPageStreamObj + 2*i;
+    const pid=firstPageStreamObj + 2*i + 1;
+    // Build ColorSpace resource dict referencing all spot CS objects used on this page
+    const csEntries = spotNames.map((sn,si) => `/${sn} ${firstCSObj+si} 0 R`).join(' ');
     wo(sid,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
-    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << /${dieName} 3 0 R >> >> >>`);
+    wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << ${csEntries} >> >> >>`);
   }
   const xo=pdf.length;pdf+=`xref\n0 ${tot+1}\n0000000000 65535 f \n`;
   for(let i=0;i<tot;i++)pdf+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
@@ -3393,6 +3573,38 @@ function addDieLinesToPage(page, outDoc, sheet, s, Wp, Hp, csRef, csAlias, dieNa
   if(contents instanceof PDFLib.PDFArray){
     contents.push(streamRef);
   }
+}
+
+/* === FIT SHEET TO LAYOUT === */
+function fitSheetToLayout(){
+  if(!sheets.length)return;
+  const s=S();
+  // Compute global art group bounds across ALL sheets
+  let gMinX=Infinity,gMinY=Infinity,gMaxX=-Infinity,gMaxY=-Infinity;
+  for(const sh of sheets){
+    for(const p of sh.placements){
+      const px=s.margin+p.x, py=s.margin+p.y;
+      gMinX=Math.min(gMinX,px); gMinY=Math.min(gMinY,py);
+      gMaxX=Math.max(gMaxX,px+p.w); gMaxY=Math.max(gMaxY,py+p.h);
+    }
+  }
+  if(gMinX>=gMaxX)return;
+  const artW=gMaxX-gMinX, artH=gMaxY-gMinY;
+  // New sheet = art + 1" margin on each side (room for dots, slug, hickeys)
+  const slugMargin=1.0;
+  const newW=artW+2*slugMargin, newH=artH+2*slugMargin;
+  // Offset all placements so art starts at (slugMargin, slugMargin) in the new sheet
+  const dx=slugMargin-gMinX, dy=slugMargin-gMinY;
+  for(const sh of sheets){
+    for(const p of sh.placements){
+      p.x+=dx; p.y+=dy;
+    }
+  }
+  // Update stock dims
+  s.stockW=parseFloat(newW.toFixed(4)); s.stockH=parseFloat(newH.toFixed(4));
+  el('stockW').value=s.stockW; el('stockH').value=s.stockH;
+  viewSheet=0; drawPreview();
+  el('layoutInfo').textContent=`Fit to ${s.stockW.toFixed(2)}" × ${s.stockH.toFixed(2)}" (1" slug margin)`;
 }
 
 /* === PRESS PREVIEW (8.5×14 low-rez for pressmen) === */
@@ -3622,6 +3834,40 @@ async function exportPressPreview(){
       const wmText='PRESS PREVIEW — NOT FOR PRODUCTION';
       const wmW=fontB.widthOfTextAtSize(wmText,wmSize);
       page.drawText(wmText,{x:(PW-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+
+      // ── Zünd Cut Color Reference (shown when any placement has die paths) ──
+      const sheetHasDie=sheet.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0);
+      if(sheetHasDie){
+        const zundColors=[
+          {name:'Thru-cut',  r:57/255, g:83/255, b:164/255},
+          {name:'Kiss-cut',  r:238/255,g:50/255, b:43/255},
+          {name:'Crease',    r:25/255, g:178/255,b:75/255},
+          {name:'Score',     r:169/255,g:29/255, b:34/255},
+          {name:'Route',     r:50/255, g:43/255, b:112/255},
+          {name:'Engrave',   r:207/255,g:217/255,b:53/255},
+          {name:'V-cut',     r:103/255,g:108/255,b:46/255},
+          {name:'Bevel-cut', r:20/255, g:87/255, b:44/255},
+          {name:'Drill',     r:29/255, g:90/255, b:133/255},
+          {name:'Punch',     r:96/255, g:158/255,b:213/255},
+          {name:'Register',  r:0,      g:0,      b:0}
+        ];
+        const zLabelSize=5.5;
+        const zTitleSize=6.5;
+        const zSwatchW=6, zSwatchH=6, zGapX=3, zRowH=9;
+        const zCol1X=sMargin, zCol2X=sMargin+80;
+        let zy=0.45*PTS;
+        const zTitle='Z\u00fcnd Cut Colors';
+        page.drawText(zTitle,{x:sMargin,y:zy+zRowH,size:zTitleSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+        zy-=2;
+        for(let zi=0;zi<zundColors.length;zi++){
+          const zc=zundColors[zi];
+          const zx=zi%2===0?zCol1X:zCol2X;
+          const zRow=Math.floor(zi/2);
+          const zyR=zy-zRow*zRowH;
+          page.drawRectangle({x:zx,y:zyR,width:zSwatchW,height:zSwatchH,color:PDFLib.rgb(zc.r,zc.g,zc.b)});
+          page.drawText(zc.name,{x:zx+zSwatchW+zGapX,y:zyR+1.5,size:zLabelSize,font:fontB,color:PDFLib.cmyk(0,0,0,0.6)});
+        }
+      }
     }
 
     const pdfBytes=await outDoc.save({useObjectStreams:false});
