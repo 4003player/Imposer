@@ -3718,10 +3718,19 @@ async function exportPressPreview(){
           const ox = x - (srcBl - usrBl);
           const oy = y - (srcBl - usrBl);
           if(p.rotated){
-            // Rotated 90° — swap W/H
+            // Rotated 90° CW — source is portrait, placement is landscape
+            // After rotate(90°) from (x+w, y), the coordinate system has:
+            //   +X pointing down, +Y pointing left
+            // So we draw the source at its original (unrotated) dimensions
+            const rSrcW = (p.srcW||p.h) * D;  // source width maps to placement height
+            const rSrcH = (p.srcH||p.w) * D;  // source height maps to placement width
+            const rSrcBl = (p.srcBleed||p.bleed||0) * D;
+            const rUsrBl = (p.bleed||0) * D;
+            const rox = -(rSrcBl - rUsrBl);
+            const roy = -(rSrcBl - rUsrBl);
             ctx.translate(x + w, y);
             ctx.rotate(Math.PI/2);
-            ctx.drawImage(thumb, 0, 0, srcH, srcW);
+            ctx.drawImage(thumb, rox, roy, rSrcW, rSrcH);
           } else {
             ctx.drawImage(thumb, ox, oy, srcW, srcH);
           }
@@ -3794,18 +3803,25 @@ async function exportPressPreview(){
       for(let i=0;i<bin.length;i++)jpegArr[i]=bin.charCodeAt(i);
       const img=await outDoc.embedJpg(jpegArr);
 
-      // --- Place on 8.5x14 page ---
+      // --- Place on 8.5x14 page (orient to match press sheet) ---
       const sheetAspect=s.stockW/s.stockH;
-      const availAspect=availW/availH;
+      const isLandscapeSheet = s.stockW > s.stockH;
+      // Orient the 8.5x14 page to match: landscape sheet → landscape page, portrait → portrait
+      const pageLong = 14*PTS, pageShort = 8.5*PTS;
+      const pgW = isLandscapeSheet ? pageLong : pageShort;
+      const pgH = isLandscapeSheet ? pageShort : pageLong;
+      const pgAvailW = pgW - 2*sMargin;
+      const pgAvailH = pgH - 2*sMargin;
+      const pgAvailAspect = pgAvailW / pgAvailH;
       let drawW, drawH;
-      if(sheetAspect>availAspect){
-        drawW=availW; drawH=availW/sheetAspect;
+      if(sheetAspect>pgAvailAspect){
+        drawW=pgAvailW; drawH=pgAvailW/sheetAspect;
       } else {
-        drawH=availH; drawW=availH*sheetAspect;
+        drawH=pgAvailH; drawW=pgAvailH*sheetAspect;
       }
 
-      const page=outDoc.addPage([PW,PH]);
-      const dx=(PW-drawW)/2, dy=(PH-drawH)/2;
+      const page=outDoc.addPage([pgW,pgH]);
+      const dx=(pgW-drawW)/2, dy=(pgH-drawH)/2;
       page.drawImage(img,{x:dx,y:dy,width:drawW,height:drawH});
 
       // Slug info at top of page
@@ -3827,13 +3843,13 @@ async function exportPressPreview(){
       const fullSlug=slugParts.join('  |  ');
 
       const slugW=fontB.widthOfTextAtSize(fullSlug,slugSize);
-      page.drawText(fullSlug,{x:(PW-slugW)/2,y:PH-topMargin-slugSize,size:slugSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+      page.drawText(fullSlug,{x:(pgW-slugW)/2,y:pgH-topMargin-slugSize,size:slugSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
 
       // "PRESS PREVIEW — NOT FOR PRODUCTION" watermark at bottom
       const wmSize=6;
       const wmText='PRESS PREVIEW — NOT FOR PRODUCTION';
       const wmW=fontB.widthOfTextAtSize(wmText,wmSize);
-      page.drawText(wmText,{x:(PW-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
+      page.drawText(wmText,{x:(pgW-wmW)/2,y:0.2*PTS,size:wmSize,font:fontB,color:PDFLib.cmyk(0,0,0,1)});
 
       // ── Zünd Cut Color Reference (shown when any placement has die paths) ──
       const sheetHasDie=sheet.placements.some(p=>p.diePaths&&p.diePaths.paths&&p.diePaths.paths.length>0);
