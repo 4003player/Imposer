@@ -1894,7 +1894,14 @@ function collectPieces(forceRotated){
   const s=S(),isDblDiff=s.doubleSided&&s.dblMode==='different',items=[];
   const scaleFactor=s.scalePercent/100;
   for(const f of inputFiles)for(const p of f.pages){
-    if(isDblDiff&&p.side==='back')continue;
+    // Double-sided different: pack back pages as layout items too.
+    // They go on the sheet as faces; the back side swaps content via findBackSource.
+    if(isDblDiff&&p.side==='back'){
+      // Use the paired face's qty (back follows face qty)
+      const faceFile=inputFiles.find(x=>x.id===p.backRef?.fileId);
+      const facePage=faceFile?.pages.find(x=>x.index===p.backRef?.pageIndex);
+      if(!facePage)continue; // orphan back with no pair — skip
+    }
     const isAuto = !p.orient || p.orient==='auto';
     // Apply scale to physical and trim dimensions
     const sPhysW=p.physW*scaleFactor, sPhysH=p.physH*scaleFactor;
@@ -2444,8 +2451,17 @@ function findBackSource(p){
   const s=S();if(!s.doubleSided)return null;
   if(s.dblMode==='same')return{fileId:p.fileId,pageIndex:p.pageIndex};
   if(s.dblMode==='common')return commonBackData?{common:true}:null;
-  // 'different' mode: backRef lives on the BACK page, pointing to its paired face.
-  // Search all back pages for one whose backRef matches this face placement.
+  // 'different' mode: check both directions.
+  // 1) If this placement is a face page, find the back page whose backRef points here.
+  // 2) If this placement is itself a back page, its backRef points to its paired face —
+  //    that face is the content for the reverse side of this position.
+  const thisFile=inputFiles.find(x=>x.id===p.fileId);
+  const thisPage=thisFile?.pages.find(x=>x.index===p.pageIndex);
+  if(thisPage?.side==='back'&&thisPage.backRef){
+    // This placement is a back page; its reverse-side content is the paired face
+    return{fileId:thisPage.backRef.fileId,pageIndex:thisPage.backRef.pageIndex};
+  }
+  // This placement is a face page; find the back page paired to it
   for(const f of inputFiles){
     for(const pg of f.pages){
       if(pg.side==='back'&&pg.backRef&&
