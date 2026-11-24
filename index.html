@@ -356,6 +356,8 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
         </select>
       </label>
     </div>
+    <div id="spotStatusNotice" style="display:none;margin-top:10px;padding:10px 14px;background:#f0f4ff;border:1px solid #c7d2fe;border-radius:8px;font-size:13px;color:#3730a3;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">
+    </div>
     <p class="note">Colors, resolution, and spot channels are preserved -- no rasterization.</p>
     <div style="text-align:center;margin-top:16px;"><button onclick="location.reload()" style="padding:12px 32px;border:none;border-radius:10px;background:#0071e3;color:#fff;font-size:15px;font-weight:600;cursor:pointer;font-family:inherit;">Make Another</button></div>
   </div>
@@ -365,6 +367,22 @@ header p { color: #86868b; font-size: 14px; margin-top: 6px; }
 <script>
 const PTS=72, REG_R=0.125*PTS, MARGIN=0.25, KAPPA=0.5522847498;
 const HICKEY_SIZE=0.7, HICKEY_DEPTH=0.36, HICKEY_OFFSET=2.0;
+
+// Zünd cut method names with RGB display colors (global for status notice)
+const ZUND_METHODS = [
+  {value:'Thru-cut',  label:'Thru-cut',  rgb:[57,83,164]},
+  {value:'Kiss-cut',  label:'Kiss-cut',  rgb:[238,50,43]},
+  {value:'Crease',    label:'Crease',    rgb:[25,178,75]},
+  {value:'Score',     label:'Score',     rgb:[169,29,34]},
+  {value:'Route',     label:'Route',     rgb:[50,43,112]},
+  {value:'Engrave',   label:'Engrave',   rgb:[207,217,53]},
+  {value:'V-cut',     label:'V-cut',     rgb:[103,108,46]},
+  {value:'Bevel-cut', label:'Bevel-cut', rgb:[20,87,44]},
+  {value:'Drill',     label:'Drill',     rgb:[29,90,133]},
+  {value:'Punch',     label:'Punch',     rgb:[96,158,213]},
+  {value:'Inside Cut',label:'Inside Cut',rgb:[255,140,0]},
+  {value:'Halfway Cut',label:'Halfway Cut',rgb:[180,90,220]}
+];
 
 let inputFiles=[], commonBackData=null;
 let fileIdSeq=0, sheets=[], viewSheet=0, viewSide='face', sheetPrintQty=1;
@@ -380,6 +398,8 @@ const KNOWN_DIE_NAMES = ['Dieline','CutContour','ThruCut','Thru-cut','Thru_cut',
   'KissCut','Kiss-cut','Kiss_cut','V-cut','Vcut','V_cut',
   'Bevel-cut','Bevelcut','Bevel_cut','Score','Crease',
   'Route','Router','Engrave','Drill','Punch','Perf','PerfCut',
+  'CutInside','InsideCut','Inside-cut','Inside_cut',
+  'HalfwayCut','Halfway-cut','Halfway_cut',
   'Die','DieCut','Die_Cut','Cutter','Cut','Trim','Fold'];
 
 /* CMYK JPEG handling: detect 4-component JPEGs and convert to PNG via canvas.
@@ -673,19 +693,7 @@ function showSpotColorModal(allSpots, onConfirm){
   let html = '<h3>Spot Colors Detected</h3>';
   html += '<p class="spot-sub">Classify each spot color channel found in your files.<br>Cut methods use Z\u00fcnd/Esko standard names for automatic tool selection.</p>';
 
-  // Zünd cut method names with RGB display colors
-  const ZUND_METHODS = [
-    {value:'Thru-cut',  label:'Thru-cut',  rgb:[57,83,164]},
-    {value:'Kiss-cut',  label:'Kiss-cut',  rgb:[238,50,43]},
-    {value:'Crease',    label:'Crease',    rgb:[25,178,75]},
-    {value:'Score',     label:'Score',     rgb:[169,29,34]},
-    {value:'Route',     label:'Route',     rgb:[50,43,112]},
-    {value:'Engrave',   label:'Engrave',   rgb:[207,217,53]},
-    {value:'V-cut',     label:'V-cut',     rgb:[103,108,46]},
-    {value:'Bevel-cut', label:'Bevel-cut', rgb:[20,87,44]},
-    {value:'Drill',     label:'Drill',     rgb:[29,90,133]},
-    {value:'Punch',     label:'Punch',     rgb:[96,158,213]}
-  ];
+  // Zünd cut method names defined globally as ZUND_METHODS
 
   // Auto-detect which Zünd method a spot name maps to
   function autoDetectZundMethod(spotName){
@@ -702,7 +710,9 @@ function showSpotColorModal(allSpots, onConfirm){
       'bevelcut':'Bevel-cut',
       'drill':'Drill',
       'punch':'Punch',
-      'perf':'Thru-cut','perfcut':'Thru-cut'
+      'perf':'Thru-cut','perfcut':'Thru-cut',
+      'cutinside':'Inside Cut','insidecut':'Inside Cut','inside':'Inside Cut',
+      'halfwaycut':'Halfway Cut','halfway':'Halfway Cut'
     };
     return map[norm] || null;
   }
@@ -784,7 +794,8 @@ function showSpotColorModal(allSpots, onConfirm){
     'Crease':    [0.86,0,0.58,0.30], 'Score':     [0,0.83,0.80,0.34],
     'Route':     [0.55,0.62,0,0.56], 'Engrave':   [0,0,0.76,0.15],
     'V-cut':     [0,0,0,0.60],       'Bevel-cut': [0.77,0,0.49,0.66],
-    'Drill':     [0.78,0.32,0,0.48], 'Punch':     [0.55,0.26,0,0.16]
+    'Drill':     [0.78,0.32,0,0.48], 'Punch':     [0.55,0.26,0,0.16],
+    'Inside Cut':[0,0.45,1,0],       'Halfway Cut':[0.29,0.65,0,0.14]
   };
 
   function applyConfig(){
@@ -1105,20 +1116,48 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
   let lineWidth = 2.835; // default
   let qDepth = 0; // track q/Q nesting inside die path section
   let currentCSName = ''; // which die CS is currently active
+  let pendingCm = null; // last cm seen before entering die mode
+  
+  // Track the page-level transform (the outermost cm after the first q).
+  // When a page shares a content stream with a larger artboard (e.g. pre-imposed PDFs),
+  // this transform maps stream coords to page coords. We apply it when filtering paths.
+  let pageCm = null; // {a,b,c,d,e,f} — null means identity
+  let seenFirstQ = false;
+  let pageQDepth = 0; // q/Q depth counter for page-level tracking
   
   for(const line of lines){
     const trimmed = line.trim();
     
     // Check for CS switch to die line
     if(!inDiePath){
+      // Track cm operators outside die mode so we can apply them when entering
+      const cmOutside = trimmed.match(/^([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm\s*$/);
+      if(cmOutside){
+        const parsed = {op:'cm', a:parseFloat(cmOutside[1]),b:parseFloat(cmOutside[2]),
+          c:parseFloat(cmOutside[3]),d:parseFloat(cmOutside[4]),
+          e:parseFloat(cmOutside[5]),f:parseFloat(cmOutside[6])};
+        pendingCm = parsed;
+        // Capture the very first non-identity cm as the page-level transform
+        if(!pageCm && seenFirstQ && pageQDepth === 1 &&
+           !(parsed.a===1 && parsed.b===0 && parsed.c===0 && parsed.d===1 && parsed.e===0 && parsed.f===0)){
+          pageCm = parsed;
+          console.log('[extractPaths] pageCm detected:', pageCm);
+        }
+      }
+      // Track q/Q depth for page-level cm detection; reset pending cm on q
+      if(trimmed === 'q'){ if(!seenFirstQ) seenFirstQ = true; pageQDepth++; pendingCm = null; }
+      if(trimmed === 'Q'){ pageQDepth--; }
       for(const csName of dieCSNames){
         if(trimmed === `/${csName} CS 1  SCN` || trimmed === `/${csName} CS 1 SCN` ||
            trimmed.startsWith(`/${csName} CS`) && trimmed.includes('SCN')){
           inDiePath = true;
           currentPath = [];
+          // Inject the pending cm if one was captured just before die mode
+          if(pendingCm) currentPath.push(pendingCm);
+          pendingCm = null;
           qDepth = 0;
           currentCSName = csName;
-          console.log('[extractPaths] ENTER die mode, csName=', csName, 'line=', trimmed);
+          console.log('[extractPaths] ENTER die mode, csName=', csName, 'line=', trimmed, 'hasCm=', currentPath.length>0);
           break;
         }
       }
@@ -1239,15 +1278,30 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
   // Filter out paths that are entirely outside the page bounds (pasteboard art)
   // Illustrator draws die paths on the pasteboard outside the art board.
   // The clip rect makes them invisible, but we extract them anyway.
-  // Filter by checking if the path's bounding box (after cm offset) overlaps the page.
+  // Filter by checking if the path's bounding box (after cm offset and page-level
+  // transform) overlaps the page. pageCm accounts for shared content streams where
+  // a page-level transform repositions the artwork onto a smaller page.
+  
+  // Helper: apply page-level cm to a point in stream coordinates
+  function applyPageCm(sx, sy){
+    if(!pageCm) return {x: sx, y: sy};
+    return {x: pageCm.a*sx + pageCm.c*sy + pageCm.e,
+            y: pageCm.b*sx + pageCm.d*sy + pageCm.f};
+  }
+  
   const filtered = paths.filter(path => {
     const cmOp = path.ops.find(op => op.op === 'cm');
-    if(!cmOp) return true; // No cm — keep it
+    if(!cmOp && !pageCm) return true; // No transforms at all — keep it
     
-    // Only handle identity cm (a=1,b=0,c=0,d=1) — just a translation
-    if(cmOp.a !== 1 || cmOp.b !== 0 || cmOp.c !== 0 || cmOp.d !== 1) return true;
+    // Compute bbox in stream coordinates (applying path-level cm if present)
+    let cmE = 0, cmF = 0;
+    if(cmOp && cmOp.a === 1 && cmOp.b === 0 && cmOp.c === 0 && cmOp.d === 1){
+      cmE = cmOp.e; cmF = cmOp.f; // simple translation
+    } else if(cmOp) {
+      // Non-identity path cm — keep it (complex transform, can't easily filter)
+      if(!pageCm) return true;
+    }
     
-    const cmE = cmOp.e, cmF = cmOp.f;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     
     for(const op of path.ops){
@@ -1259,19 +1313,18 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
       else if(op.op === 're'){ lx = op.x + op.w; ly = op.y + op.h; }
       else continue;
       
-      const px = lx + cmE;
-      const py = ly + cmF;
-      minX = Math.min(minX, px);
-      maxX = Math.max(maxX, px);
-      minY = Math.min(minY, py);
-      maxY = Math.max(maxY, py);
+      // Stream coords (after path cm)
+      const sx = lx + cmE, sy = ly + cmF;
+      // Apply page-level transform to get page coords
+      const p = applyPageCm(sx, sy);
+      minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
     }
     
     // Also include the cm offset point itself
-    minX = Math.min(minX, cmE);
-    maxX = Math.max(maxX, cmE);
-    minY = Math.min(minY, cmF);
-    maxY = Math.max(maxY, cmF);
+    const pO = applyPageCm(cmE, cmF);
+    minX = Math.min(minX, pO.x); maxX = Math.max(maxX, pO.x);
+    minY = Math.min(minY, pO.y); maxY = Math.max(maxY, pO.y);
     
     // Check if bbox overlaps the page (with tolerance)
     const tol = 1;
@@ -2349,6 +2402,24 @@ function selectLayout(idx){
   el('regDotsLabel').style.display=(hasDiePaths||sheets.length>0)?'inline-flex':'none';
   // Cut button always shows (generates perimeter cuts for files without die paths)
   el('cutBtn').style.display='';
+  updateSpotStatusNotice();
+}
+
+function updateSpotStatusNotice(){
+  const notice = el('spotStatusNotice');
+  const zm = spotColorConfig.zundMethodMap;
+  if(!zm || zm.size === 0){
+    notice.style.display='none';
+    return;
+  }
+  // Build a summary of assigned cut methods
+  const items = [];
+  for(const [srcName, info] of zm){
+    const rgb = ZUND_METHODS.find(m=>m.value===info.name)?.rgb || [100,100,100];
+    items.push(`<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgb(${rgb.join(',')})"></span><b>${info.name}</b> <span style="color:#6366f1;font-size:12px">(from ${srcName})</span></span>`);
+  }
+  notice.innerHTML = `<div style="margin-bottom:2px;font-weight:600;font-size:12px;color:#4338ca">🔪 Active cut methods in output:</div><div style="display:flex;flex-wrap:wrap;gap:4px 0">${items.join('')}</div>`;
+  notice.style.display='';
 }
 
 /* === MARKS === */
@@ -3231,7 +3302,16 @@ function exportCutPDF(){
     }
     return{cuts,dots};
   });
-  download(buildCutPDF(sd,Wp,Hp),fileName(s)+'_Cut.pdf');
+  // Download one 1-page Cut PDF per press sheet (Zünd loads one file per sheet)
+  const base=fileName(s);
+  if(sd.length===1){
+    download(buildCutPDF(sd,Wp,Hp),base+'_Cut.pdf');
+  }else{
+    for(let i=0;i<sd.length;i++){
+      const one=buildCutPDF([sd[i]],Wp,Hp);
+      download(one,base+'_Cut_Sheet'+(i+1)+'of'+sd.length+'.pdf');
+    }
+  }
 }
 
 function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, rotated, origSrcW){
@@ -3293,6 +3373,9 @@ function translateDiePath(path, offsetX, offsetY, scaleX, scaleY, srcH, dstH, ro
   return {ops};
 }
 
+// Escape a string for use as a PDF /Name token (spaces→#20, parens, etc.)
+function pdfNameEscape(s){return s.replace(/[^!-~]|[#\/%()<>\[\]{}]/g,c=>'#'+c.charCodeAt(0).toString(16).padStart(2,'0'));}
+
 function buildCutPDF(sd,W,H){
   const R=REG_R,K=KAPPA,n=sd.length,f=v=>v.toFixed(4);
   const defaultDieName = spotColorConfig.generatedDieName || 'CutContour';
@@ -3328,7 +3411,7 @@ function buildCutPDF(sd,W,H){
   for(let si=0;si<spotNames.length;si++){
     const sn = spotNames[si];
     const cmyk = spotMap.get(sn);
-    wo(firstCSObj+si,`[/Separation /${sn} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${cmyk.join(' ')}] /N 1 >>]`);
+    wo(firstCSObj+si,`[/Separation /${pdfNameEscape(sn)} /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [${cmyk.join(' ')}] /N 1 >>]`);
   }
 
   for(let i=0;i<n;i++){
@@ -3339,7 +3422,7 @@ function buildCutPDF(sd,W,H){
     for(const c of sh.cuts){
       const sn = c.spotName || defaultDieName;
       if(sn !== curCS){
-        s+=`/${sn} CS\n1 SCN\n`;
+        s+=`/${pdfNameEscape(sn)} CS\n1 SCN\n`;
         curCS = sn;
       }
       if(c.type==='rect'){
@@ -3360,7 +3443,7 @@ function buildCutPDF(sd,W,H){
     const sid=firstPageStreamObj + 2*i;
     const pid=firstPageStreamObj + 2*i + 1;
     // Build ColorSpace resource dict referencing all spot CS objects used on this page
-    const csEntries = spotNames.map((sn,si) => `/${sn} ${firstCSObj+si} 0 R`).join(' ');
+    const csEntries = spotNames.map((sn,si) => `/${pdfNameEscape(sn)} ${firstCSObj+si} 0 R`).join(' ');
     wo(sid,`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
     wo(pid,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${f(W)} ${f(H)}] /Contents ${sid} 0 R /Resources << /ColorSpace << ${csEntries} >> >> >>`);
   }
