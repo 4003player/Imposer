@@ -1137,9 +1137,15 @@ async function extractPathsForCS(pdfBytes, doc, pageIdx, pageW, pageH, csNames){
           c:parseFloat(cmOutside[3]),d:parseFloat(cmOutside[4]),
           e:parseFloat(cmOutside[5]),f:parseFloat(cmOutside[6])};
         pendingCm = parsed;
-        // Capture the very first non-identity cm as the page-level transform
-        if(!pageCm && seenFirstQ && pageQDepth === 1 &&
-           !(parsed.a===1 && parsed.b===0 && parsed.c===0 && parsed.d===1 && parsed.e===0 && parsed.f===0)){
+        // Capture the first cm as the page-level transform — but ONLY if it is a
+        // pure translation (unit scale). Scaled matrices are artwork placement
+        // transforms (e.g. art placed at 196x); treating them as pageCm makes the
+        // pasteboard filter map real die paths off-page and discard them
+        // (regression: BETB-EN052-40 dieline lost).
+        const isTranslation = parsed.b===0 && parsed.c===0 &&
+          Math.abs(parsed.a-1)<0.001 && Math.abs(parsed.d-1)<0.001;
+        if(!pageCm && seenFirstQ && pageQDepth === 1 && isTranslation &&
+           !(parsed.e===0 && parsed.f===0)){
           pageCm = parsed;
           console.log('[extractPaths] pageCm detected:', pageCm);
         }
